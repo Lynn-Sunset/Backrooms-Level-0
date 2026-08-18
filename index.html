@@ -32,8 +32,18 @@
     transition: background 0.2s;
   }
   #overlay button:hover { background: rgba(232,213,149,0.3); }
+  #overlay button:disabled { opacity: 0.5; cursor: not-allowed; }
+  #overlay button:disabled:hover { background: rgba(232,213,149,0.15); }
   #overlay .hint { margin-top: 24px; color: #999; font-size: 0.8rem; animation: pulse 2s infinite; }
   @keyframes pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }
+
+  .restart-btn {
+    margin-top: 14px; padding: 10px 28px; font-size: 0.95rem; cursor: pointer;
+    background: rgba(232,213,149,0.12); border: 1px solid #e8d595; color: #e8d595;
+    letter-spacing: 0.15em; font-family: 'Courier New', monospace; border-radius: 4px;
+    transition: background 0.2s;
+  }
+  .restart-btn:hover { background: rgba(232,213,149,0.28); }
 
   /* 计时器 */
   /* 正计时 — 右上角 */
@@ -107,6 +117,18 @@
   }
   #stamina-label.show { opacity: 1; }
 
+  /* 拾取/提示 toast */
+  #toast {
+    position: fixed; top: 72px; left: 50%; transform: translateX(-50%);
+    z-index: 16; pointer-events: none; opacity: 0;
+    transition: opacity 0.35s, top 0.35s;
+    color: #e8f4ff; font-size: 0.9rem; letter-spacing: 0.1em;
+    background: rgba(0,0,0,0.55); border: 1px solid rgba(180,220,255,0.4);
+    padding: 6px 16px; border-radius: 4px; font-family: 'Courier New', monospace;
+    white-space: nowrap;
+  }
+  #toast.show { opacity: 1; top: 84px; }
+
   /* 游戏结束 */
   #dead-overlay {
     position: fixed; inset: 0; z-index: 20;
@@ -134,17 +156,27 @@
   .leaderboard .rank { width: 28px; text-align: center; color: #888; }
   .leaderboard .time { width: 60px; text-align: right; }
   .leaderboard .deaths { width: 50px; text-align: center; }
+
+  /* 关卡过渡 */
+  #level-transition {
+    position: fixed; inset: 0; z-index: 25; background: #000;
+    opacity: 0; pointer-events: none; transition: opacity 0.8s;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+  }
+  #level-transition.active { opacity: 1; pointer-events: auto; }
+  #level-transition h2 { color: #e8d595; font-size: 2rem; letter-spacing: 0.3em; }
+  #level-transition p  { color: #888; font-size: 0.9rem; margin-top: 12px; }
 </style>
 </head>
 <body>
 
 <div id="overlay">
   <h1>B A C K R O O M S</h1>
-  <p>Level 0 — 前厅</p>
+  <p>Level 0 — 教学关</p>
   <input id="player-name" type="text" placeholder="输入你的名字" maxlength="12" autocomplete="off" />
-  <button id="start-btn">开始探索</button>
+  <button id="start-btn" disabled>加载模型中…</button>
 </div>
-<div id="info">WASD 移动 · 空格跳跃 · 鼠标环顾 · ESC 释放光标</div>
+<div id="info">WASD 移动 · Shift 冲刺(双倍体力消耗) · 空格跳跃 · 鼠标环顾 · ESC 释放光标</div>
 <div id="elapsed-time">⏱ 00:00</div>
 <div id="vignette"></div>
 <div id="grain"></div>
@@ -152,19 +184,23 @@
 
 <div id="stamina-bar"><div id="stamina-fill"></div></div>
 <div id="stamina-label">体力剩余 2:00</div>
+<div id="toast"></div>
 
 <div id="win-overlay">
   <h1>🚪 你找到了出口</h1>
   <p id="win-stats"></p>
   <div class="leaderboard" id="win-leaderboard"></div>
-  <span class="hint">刷新页面重新探索</span>
+  <button class="restart-btn" onclick="location.reload()">🔄 再来一局</button>
+  <span class="hint">或刷新页面重新探索</span>
 </div>
 
+<div id="level-transition"><h2></h2><p></p></div>
 <div id="dead-overlay">
   <h1>💀 体力耗尽</h1>
   <p id="dead-stats"></p>
   <div class="leaderboard" id="dead-leaderboard"></div>
-  <span class="hint">刷新页面重新探索</span>
+  <button class="restart-btn" onclick="location.reload()">🔄 再来一局</button>
+  <span class="hint">或刷新页面重新探索</span>
 </div>
 
 <!-- Supabase SDK -->
@@ -183,20 +219,68 @@
 import * as THREE from 'three';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 console.log('🏚️ Backrooms Level 0 启动中...');
 
-// ==================== 配置 ====================
-const GRID_W       = 10;
-const GRID_H       = 10;
-const ROOM_SIZE    = 5;
-const ROOM_HEIGHT  = 3;
-const WALL_THICK   = 0.15;
-const DOOR_WIDTH   = 2.0;
-const PLAYER_SPEED = 5.5;
-const PLAYER_RAD   = 0.4;
-const EYE_HEIGHT   = 1.65;
+// ==================== 关卡配置 ====================
+const LEVELS = [
+  { // Level 0 — 前厅
+    id: 0, name: 'Level 0', subtitle: '前厅', theme: 'backrooms',
+    gridW: 10, gridH: 10, roomSize: 5, roomH: 4.0, wallThick: 0.15, doorW: 2.4, doorH: 3.0,
+    mergeChance: 0.2,
+    playerSpeed: 5.5, playerRad: 0.3, eyeH: 1.65,
+    wallColor: '#e6d28a', floorColor: '#c8b088', ceilColor: '#f0ede5',
+    bgColor: '#a89868', fogColor: '#b8a070', fogNear: 12, fogFar: 50,
+    ambientColor: '#fff5e0', ambientInt: 0.22, hemiSky: '#ffe8cc', hemiGround: '#a09070', hemiInt: 0.16,
+    panelColor: '#ffffff', panelEmissive: '#fff6dc', panelEmissiveInt: 1.05,
+    lightSpacing: 4, lightDist: 28, panelW: 1.3, panelD: 3.3, panelDrop: 0.04,
+    stamina: 120,
+    pickups: 2, pickupBonus: 45,
+    sprintSpeedMul: 1.6, sprintDrainMul: 2.0,
+  },
+  { // Level 1 — 现实仓库（原 Level 2，撤销旧宜居地带）
+    id: 1, name: 'Level 1', subtitle: '现实仓库', theme: 'warehouse',
+    gridW: 7, gridH: 7, roomSize: 11, roomH: 6.5, wallThick: 0.25, doorW: 6.0, doorH: 4.6,
+    mergeChance: 0.45, extraOpen: 0.55,
+    playerSpeed: 5.8, playerRad: 0.32, eyeH: 1.7,
+    wallColor: '#8b9096', floorColor: '#6e7072', ceilColor: '#3d4044',
+    bgColor: '#1c1e20', fogColor: '#2b2d30', fogNear: 12, fogFar: 70,
+    ambientColor: '#d8dde2', ambientInt: 0.22, hemiSky: '#b8c4cc', hemiGround: '#3a3c3e', hemiInt: 0.15,
+    panelColor: '#f2f8ff', panelEmissive: '#dcecff', panelEmissiveInt: 1.6,
+    lightSpacing: 3, lightDist: 42, panelW: 1.7, panelD: 4.4, panelDrop: 1.7,
+    stamina: 150,
+    pickups: 4, pickupBonus: 45,
+    sprintSpeedMul: 1.6, sprintDrainMul: 1.9,
+  },
+  { // Level 2 — 苏式园林（白墙黛瓦 / 月门 / 假山 / 池塘 / 亭子 / 竹林 / 红灯笼）
+    id: 2, name: 'Level 2', subtitle: '苏式园林', theme: 'garden',
+    gridW: 8, gridH: 8, roomSize: 9, roomH: 4.2, wallThick: 0.30, doorW: 3.0, doorH: 2.8,
+    mergeChance: 0.30, extraOpen: 0.40,
+    playerSpeed: 5.8, playerRad: 0.32, eyeH: 1.7,
+    wallColor: '#e8e2d8', floorColor: '#9a9a8c', ceilColor: '#2b3a42',
+    bgColor: '#1b2a33', fogColor: '#2f414a', fogNear: 8, fogFar: 55,
+    ambientColor: '#c8d4d8', ambientInt: 0.30, hemiSky: '#304a55', hemiGround: '#1d2824', hemiInt: 0.22,
+    panelColor: '#ffe8c0', panelEmissive: '#ffb060', panelEmissiveInt: 1.2,
+    lightSpacing: 2, lightDist: 22, panelW: 0.0, panelD: 0.0, panelDrop: 0.0,
+    stamina: 150,
+    pickups: 4, pickupBonus: 45,
+    sprintSpeedMul: 1.6, sprintDrainMul: 1.9,
+  }
+];
+let currentLevel = 0;
+let elapsedTime = 0;
+let deathCount = 0;
+let playerName = "";
+let CFG = LEVELS[currentLevel];
+
+
+ // 当前关卡配置引用
 
 // ==================== 迷宫生成 ====================
 function shuffle(arr) {
@@ -210,9 +294,9 @@ function shuffle(arr) {
 
 function generateMaze() {
   const cells = [];
-  for (let z = 0; z < GRID_H; z++) {
+  for (let z = 0; z < CFG.gridH; z++) {
     cells[z] = [];
-    for (let x = 0; x < GRID_W; x++) {
+    for (let x = 0; x < CFG.gridW; x++) {
       cells[z][x] = { x, z, visited: false, walls: { n: true, s: true, e: true, w: true } };
     }
   }
@@ -226,7 +310,7 @@ function generateMaze() {
       { dx:-1, dz:  0, w: 'w', opp: 'e' }
     ])) {
       const nx = x + d.dx, nz = z + d.dz;
-      if (nx >= 0 && nx < GRID_W && nz >= 0 && nz < GRID_H && !cells[nz][nx].visited) {
+      if (nx >= 0 && nx < CFG.gridW && nz >= 0 && nz < CFG.gridH && !cells[nz][nx].visited) {
         cells[z][x].walls[d.w] = false;
         cells[nz][nx].walls[d.opp] = false;
         carve(nx, nz);
@@ -236,13 +320,14 @@ function generateMaze() {
   carve(0, 0);
 
   // 额外通道 —— 打破完美迷宫，制造环路
-  for (let z = 0; z < GRID_H; z++) {
-    for (let x = 0; x < GRID_W; x++) {
-      if (z < GRID_H - 1 && cells[z][x].walls.s && Math.random() < 0.15) {
+  for (let z = 0; z < CFG.gridH; z++) {
+    for (let x = 0; x < CFG.gridW; x++) {
+      const openChance = CFG.extraOpen || 0.15;
+      if (z < CFG.gridH - 1 && cells[z][x].walls.s && Math.random() < openChance) {
         cells[z][x].walls.s = false;
         cells[z+1][x].walls.n = false;
       }
-      if (x < GRID_W - 1 && cells[z][x].walls.e && Math.random() < 0.15) {
+      if (x < CFG.gridW - 1 && cells[z][x].walls.e && Math.random() < openChance) {
         cells[z][x].walls.e = false;
         cells[z][x+1].walls.w = false;
       }
@@ -251,30 +336,170 @@ function generateMaze() {
   return cells;
 }
 
-const maze = generateMaze();
+let maze = generateMaze();
+
+
+// ==================== 关卡清理 ====================
+function disposeCurrentLevel() {
+  // 清除 worldGroup：GLB 克隆体与 modelStore 共享几何体，绝不能 dispose；
+  // 只释放实例自有的材质（ownedMaterials），程序化几何体照常释放。
+  while(worldGroup.children.length > 0) {
+    const obj = worldGroup.children[0];
+    worldGroup.remove(obj);
+    obj.traverse(child => {
+      if (child.isMesh) {
+        if (!child.userData.isModelMesh && child.geometry) child.geometry.dispose();
+        if (child.userData.ownedMaterials) {
+          child.userData.ownedMaterials.forEach(m => m.dispose());
+          child.userData.ownedMaterials = null;
+        }
+        if (child.userData.ownedMaps) {
+          child.userData.ownedMaps.forEach(t => t.dispose());
+          child.userData.ownedMaps = null;
+        }
+      }
+    });
+  }
+  // 清除旧灰尘粒子
+  const toRemoveScene = [];
+  scene.children.forEach(c => { if (c.isPoints) toRemoveScene.push(c); });
+  toRemoveScene.forEach(c => { scene.remove(c); if (c.geometry) c.geometry.dispose(); if (c.material) { if (c.material.map) c.material.map.dispose(); c.material.dispose(); } });
+  // 清除碰撞和闪烁数据
+  wallColliders.length = 0;
+  colliderGrid.length = 0;
+  flickerLights.length = 0;
+  exitDoors.length = 0;
+  almondPickups.length = 0;
+  mistParticles = null;
+  mistData.length = 0;
+  dustParticles = null;
+}
+
+function transitionToLevel(nextIndex) {
+  if (nextIndex >= LEVELS.length) {
+    gameOver = true;
+    const winRec = addRecord(playerName, elapsedTime, true, deathCount);
+    renderLeaderboard("win-leaderboard", playerName, elapsedTime, true, winRec.ts);
+    document.getElementById("win-stats").textContent =
+      "通关时间: " + formatTime(elapsedTime) + " | 到达: " + CFG.name;
+    document.getElementById("win-overlay").classList.add("show");
+    controls.unlock();
+    return;
+  }
+
+  const transEl = document.getElementById("level-transition");
+  const nextCFG = LEVELS[nextIndex];
+  transEl.querySelector("h2").textContent = nextCFG.name + " — " + nextCFG.subtitle;
+  transEl.querySelector("p").textContent = "进入中...";
+  transEl.classList.add("active");
+  controls.unlock();
+
+  setTimeout(() => {
+    disposeCurrentLevel();
+    currentLevel = nextIndex;
+    CFG = LEVELS[nextIndex];
+    document.title = "Backrooms " + CFG.name + " — " + CFG.subtitle;
+    // 同步开始覆盖层文案，避免切关后仍显示“Level 0 — 教学关”
+    const overlayTitle = document.querySelector('#overlay p');
+    if (overlayTitle) overlayTitle.textContent = CFG.name + ' — ' + CFG.subtitle;
+    scene.background = new THREE.Color(CFG.bgColor);
+    scene.fog = new THREE.Fog(CFG.fogColor, CFG.fogNear, CFG.fogFar);
+    scene.children.forEach(c => {
+      if (c.isAmbientLight) { c.color.set(CFG.ambientColor); c.intensity = CFG.ambientInt; }
+      if (c.isHemisphereLight) { c.color.set(CFG.hemiSky); c.groundColor.set(CFG.hemiGround); c.intensity = CFG.hemiInt; }
+    });
+    maze = generateMaze();
+    buildCurrentLevel();
+    timeLeft = CFG.stamina;
+    updateStaminaUI();
+    camera.position.set(
+      (Math.floor(CFG.gridW/2) + 0.5) * CFG.roomSize,
+      CFG.eyeH,
+      (Math.floor(CFG.gridH/2) + 0.5) * CFG.roomSize
+    );
+    transEl.classList.remove("active");
+    // 不能直接在 setTimeout 中 lock（非用户手势），显示覆盖层让玩家点击
+    overlay.classList.remove("hidden");
+    console.log("Level " + nextIndex + " ready: " + CFG.name + " — 点击屏幕继续");
+  }, 1200);
+}
 
 // ==================== Three.js 初始化 ====================
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+// 自适应分辨率：默认不超过 1.5，低帧率时自动降档，保证流畅度
+const MAX_PIXEL_RATIO = Math.min(window.devicePixelRatio || 1, 1.5);
+let currentPixelRatio = MAX_PIXEL_RATIO;
+renderer.setPixelRatio(currentPixelRatio);
 renderer.shadowMap.enabled = false;
-renderer.toneMapping = THREE.NoToneMapping;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color('#a89868');
+scene.background = new THREE.Color(CFG.bgColor);
 // 更浓的雾 —— 远处消失在昏黄中
-scene.fog = new THREE.Fog('#b8a070', 10, 42);
+scene.fog = new THREE.Fog(CFG.fogColor, CFG.fogNear, CFG.fogFar);
+
+// 环境贴图 — 为 GLB 的玻璃/金属 PBR 材质提供 IBL 反射（否则透射玻璃渲染近黑）
+const pmremGenerator = new THREE.PMREMGenerator(renderer);
+scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
+pmremGenerator.dispose();
 
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 80);
 // 出生房间坐标
-const SPAWN_GX = Math.floor(GRID_W / 2);
-const SPAWN_GZ = Math.floor(GRID_H / 2);
+let SPAWN_GX = Math.floor(CFG.gridW / 2);
+let SPAWN_GZ = Math.floor(CFG.gridH / 2);
 camera.position.set(
-  (SPAWN_GX + 0.5) * ROOM_SIZE,
-  EYE_HEIGHT,
-  (SPAWN_GZ + 0.5) * ROOM_SIZE
+  (SPAWN_GX + 0.5) * CFG.roomSize,
+  CFG.eyeH,
+  (SPAWN_GZ + 0.5) * CFG.roomSize
 );
+
+// ==================== 后期处理：荧光灯泛光 + 电影级色调映射 ====================
+// 软件渲染（SwiftShader / llvmpipe / Microsoft Basic Render Driver）下泛光的多次全屏 pass 极慢，自动降级关闭
+let composer = null;
+let useBloom = true;
+try {
+  const gl = renderer.getContext();
+  const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+  if (dbg) {
+    const rstr = String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || '');
+    if (/swiftshader|software|llvmpipe|basic render/i.test(rstr)) useBloom = false;
+  }
+} catch(e) {}
+if (useBloom) {
+  composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  composer.addPass(new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.5, 0.45, 0.85));
+  composer.addPass(new OutputPass());
+  console.log('✨ 泛光后期已启用');
+} else {
+  console.log('⚡ 检测到软件渲染，关闭泛光后期以提升帧率');
+}
+
+// ==================== 自适应画质：低帧率自动降分辨率 ====================
+let fpsAccum = 0, fpsFrames = 0;
+function applyPixelRatio(pr) {
+  currentPixelRatio = Math.max(0.8, Math.min(MAX_PIXEL_RATIO, pr));
+  renderer.setPixelRatio(currentPixelRatio);
+  if (composer) {
+    composer.setPixelRatio(currentPixelRatio);
+    composer.setSize(window.innerWidth, window.innerHeight);
+  }
+}
+function updateAdaptiveQuality(dt) {
+  fpsAccum += dt;
+  fpsFrames++;
+  if (fpsAccum < 1.0) return;
+  const avg = fpsAccum / fpsFrames;
+  fpsAccum = 0; fpsFrames = 0;
+  if (avg > 0.06 && currentPixelRatio > 0.8) {
+    applyPixelRatio(currentPixelRatio - 0.1);
+  } else if (avg < 0.024 && currentPixelRatio < MAX_PIXEL_RATIO) {
+    applyPixelRatio(currentPixelRatio + 0.1);
+  }
+}
 
 // ==================== 材质 ====================
 // 墙纸纹理生成 — 512px · 8种高对比图案 · 护墙板腰线
@@ -412,23 +637,7 @@ function generateWallpaper(seed) {
   return tex;
 }
 
-// 墙纸材质池 — 6 种 256px 纹理
-const WALL_MAT_POOL = [];
-console.log('🎨 生成墙纸纹理...');
-for (let i = 0; i < 6; i++) {
-  const color = new THREE.Color('#e6d28a');
-  color.offsetHSL((Math.random() - 0.5) * 0.04, (Math.random() - 0.5) * 0.12, (Math.random() - 0.5) * 0.06);
-  const mat = new THREE.MeshPhongMaterial({
-    color: color, specular: '#111111', shininess: 3
-  });
-  try {
-    mat.map = generateWallpaper(i);
-  } catch(e) {
-    console.warn('纹理生成失败 pattern#' + i + ':', e.message);
-  }
-  WALL_MAT_POOL.push(mat);
-}
-console.log('✅ 墙纸纹理: ' + WALL_MAT_POOL.length + ' 种材质就绪');
+let WALL_MAT_POOL = [];
 function pickWallMaterial() {
   return WALL_MAT_POOL[Math.floor(Math.random() * WALL_MAT_POOL.length)];
 }
@@ -436,6 +645,7 @@ function pickWallMaterial() {
 const floorMatBase = new THREE.MeshPhongMaterial({
   color: '#c8b088', specular: '#000000', shininess: 1
 });
+let floorTex = null; // Level 1 混凝土地板纹理（L0 时为 null）
 const ceilMat = new THREE.MeshPhongMaterial({
   color: '#f0ede5', specular: '#222222', shininess: 8
 });
@@ -448,6 +658,317 @@ const pillarMat = new THREE.MeshPhongMaterial({
 const trimMat = new THREE.MeshPhongMaterial({
   color: '#4a3822', specular: '#000000', shininess: 1
 });
+
+// Level 1 工业材质 — MeshStandardMaterial 吃 scene.environment（金属反光/湿面光泽）
+const cordMat = new THREE.MeshStandardMaterial({ color: '#1f2123', roughness: 0.55, metalness: 0.85 });
+const pipeMat = new THREE.MeshStandardMaterial({ color: '#383c40', roughness: 0.45, metalness: 0.8 });
+const ductMat = new THREE.MeshStandardMaterial({ color: '#4a4e53', roughness: 0.5, metalness: 0.6 });
+const rebarMat = new THREE.MeshStandardMaterial({ color: '#4b4d50', roughness: 0.3, metalness: 0.9 });
+const drumMat = new THREE.MeshStandardMaterial({ color: '#54483c', roughness: 0.55, metalness: 0.5 });
+const machineryMat = new THREE.MeshStandardMaterial({ color: '#3f4448', roughness: 0.5, metalness: 0.7 });
+const crateMat = new THREE.MeshPhongMaterial({ color: '#6a6040', specular: '#111111', shininess: 5 });
+const steelDoorPanelMat = new THREE.MeshStandardMaterial({ color: '#3f4347', roughness: 0.4, metalness: 0.7 });
+const steelDoorFrameMat = new THREE.MeshStandardMaterial({ color: '#232527', roughness: 0.45, metalness: 0.65 });
+// Level 1 水坑/涂鸦 — 模块级（合并几何引用它们，避免随每关重建泄漏）
+const puddleMat = new THREE.MeshStandardMaterial({
+  color: '#23262a', roughness: 0.08, metalness: 0.15, transparent: true, opacity: 0.62
+});
+const graffitiMat = new THREE.MeshPhongMaterial({
+  color: '#3a3028', specular: '#000', shininess: 1, transparent: true, opacity: 0.4
+});
+const shelfMat = new THREE.MeshStandardMaterial({ color: '#3b3e42', roughness: 0.5, metalness: 0.65 });
+
+// Level 1 混凝土地板纹理 — 伸缩缝 + 污渍 + 裂缝（2m 一块平铺）
+function buildL1FloorTexture() {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 256;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#56585a';
+  ctx.fillRect(0, 0, 256, 256);
+  // 噪点
+  const img = ctx.getImageData(0, 0, 256, 256);
+  for (let i = 0; i < img.data.length; i += 4) {
+    const n = (Math.random() - 0.5) * 24;
+    img.data[i] += n; img.data[i + 1] += n; img.data[i + 2] += n;
+  }
+  ctx.putImageData(img, 0, 0);
+  // 伸缩缝（十字中线）
+  ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+  ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(128, 0); ctx.lineTo(128, 256); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, 128); ctx.lineTo(256, 128); ctx.stroke();
+  // 污渍斑
+  for (let i = 0; i < 10; i++) {
+    const x = Math.random() * 256, y = Math.random() * 256, r = 20 + Math.random() * 45;
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, 'rgba(40,35,30,0.18)');
+    g.addColorStop(1, 'rgba(40,35,30,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+  // 裂缝
+  ctx.strokeStyle = 'rgba(0,0,0,0.18)'; ctx.lineWidth = 1;
+  for (let k = 0; k < 4; k++) {
+    ctx.beginPath();
+    ctx.moveTo(Math.random() * 256, Math.random() * 256);
+    ctx.lineTo(Math.random() * 256, Math.random() * 256);
+    ctx.stroke();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.RepeatWrapping;
+  tex.magFilter = THREE.LinearFilter; tex.minFilter = THREE.LinearFilter;
+  return tex;
+}
+
+// Level 1 卷帘门纹理 — 横向卷帘条 + 噪点（模块级共享，所有卷帘门复用）
+function buildRollerDoorTexture() {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 256;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#8a8f95';
+  ctx.fillRect(0, 0, 256, 256);
+  // 横向卷帘条（每 16px：顶缘亮线 + 底缘暗影）
+  for (let y = 0; y < 256; y += 16) {
+    ctx.fillStyle = 'rgba(255,255,255,0.16)';
+    ctx.fillRect(0, y, 256, 3);
+    ctx.fillStyle = 'rgba(0,0,0,0.25)';
+    ctx.fillRect(0, y + 13, 256, 3);
+  }
+  // 细噪点
+  for (let i = 0; i < 900; i++) {
+    const g = 120 + Math.floor(Math.random() * 40);
+    ctx.fillStyle = 'rgba(' + g + ',' + g + ',' + (g + 6) + ',0.18)';
+    ctx.fillRect(Math.random() * 256, Math.random() * 256, 2, 2);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.RepeatWrapping;
+  tex.magFilter = THREE.LinearFilter; tex.minFilter = THREE.LinearFilter;
+  return tex;
+}
+const rollerDoorTex = buildRollerDoorTexture();
+const rollerDoorMat = new THREE.MeshStandardMaterial({ map: rollerDoorTex, roughness: 0.45, metalness: 0.6 });
+
+// ==================== Level 2 现实仓库材质与纹理 ====================
+// L2 地面：水泥 + 伸缩缝 + 轮胎印 + 油渍（每 bay 平铺一次，RepeatWrapping）
+function buildL2FloorTexture() {
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 512;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#77797c';
+  ctx.fillRect(0, 0, 512, 512);
+  // 混凝土噪点
+  const img = ctx.getImageData(0, 0, 512, 512);
+  for (let i = 0; i < img.data.length; i += 4) {
+    const n = (Math.random() - 0.5) * 22;
+    img.data[i] += n; img.data[i + 1] += n; img.data[i + 2] += n;
+  }
+  ctx.putImageData(img, 0, 0);
+  // 大块色差（施工缝/修补）
+  for (let i = 0; i < 12; i++) {
+    const x = Math.random() * 512, y = Math.random() * 512, r = 40 + Math.random() * 120;
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, 'rgba(50,52,56,0.12)');
+    g.addColorStop(1, 'rgba(50,52,56,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+  // 油渍
+  for (let i = 0; i < 6; i++) {
+    const x = Math.random() * 512, y = Math.random() * 512, r = 18 + Math.random() * 55;
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, 'rgba(18,16,14,0.30)');
+    g.addColorStop(0.7, 'rgba(30,28,24,0.12)');
+    g.addColorStop(1, 'rgba(30,28,24,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+  // 伸缩缝：十字中缝 + 四边
+  ctx.strokeStyle = 'rgba(20,20,22,0.55)';
+  ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.moveTo(256, 0); ctx.lineTo(256, 512); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, 256); ctx.lineTo(512, 256); ctx.stroke();
+  ctx.lineWidth = 2;
+  ctx.strokeRect(2, 2, 508, 508);
+  // 轮胎摩擦黑痕
+  ctx.strokeStyle = 'rgba(15,15,16,0.22)';
+  ctx.lineWidth = 14;
+  for (let track = 0; track < 2; track++) {
+    const ty = 120 + track * 250;
+    ctx.beginPath(); ctx.moveTo(0, ty); ctx.bezierCurveTo(160, ty - 20, 330, ty + 26, 512, ty - 6); ctx.stroke();
+  }
+  // 裂缝
+  ctx.strokeStyle = 'rgba(10,10,12,0.30)'; ctx.lineWidth = 1;
+  for (let k = 0; k < 5; k++) {
+    ctx.beginPath();
+    ctx.moveTo(Math.random() * 512, Math.random() * 512);
+    ctx.lineTo(Math.random() * 512, Math.random() * 512);
+    ctx.stroke();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.RepeatWrapping;
+  tex.magFilter = THREE.LinearFilter; tex.minFilter = THREE.LinearFilter;
+  return tex;
+}
+
+// L2 墙板纹理：竖向波纹金属板（仓库外墙/隔断）
+function buildL2CorrugatedTexture() {
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 512;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#9a9ea3';
+  ctx.fillRect(0, 0, 512, 512);
+  for (let x = 0; x < 512; x++) {
+    const rib = Math.floor(x / 16) % 2;
+    ctx.fillStyle = rib ? 'rgba(255,255,255,0.10)' : 'rgba(0,0,0,0.14)';
+    ctx.fillRect(x, 0, 1, 512);
+  }
+  for (let y = 0; y < 512; y += 64) {
+    ctx.fillStyle = 'rgba(0,0,0,0.16)';
+    ctx.fillRect(0, y, 512, 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.08)';
+    ctx.fillRect(0, y + 2, 512, 2);
+  }
+  const img = ctx.getImageData(0, 0, 512, 512);
+  for (let i = 0; i < img.data.length; i += 4) {
+    const n = (Math.random() - 0.5) * 16;
+    img.data[i] += n; img.data[i + 1] += n; img.data[i + 2] += n;
+  }
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.RepeatWrapping;
+  tex.magFilter = THREE.LinearFilter; tex.minFilter = THREE.LinearFilter;
+  return tex;
+}
+
+// L2 黄黑警示条纹纹理（踢脚线/门洞包边）
+function buildHazardStripeTexture() {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 64;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#e0b000';
+  ctx.fillRect(0, 0, 256, 64);
+  ctx.fillStyle = '#111111';
+  for (let x = -64; x < 256; x += 64) {
+    ctx.beginPath();
+    ctx.moveTo(x, 0); ctx.lineTo(x + 32, 0); ctx.lineTo(x + 96, 64); ctx.lineTo(x + 64, 64);
+    ctx.closePath(); ctx.fill();
+  }
+  const img = ctx.getImageData(0, 0, 256, 64);
+  for (let i = 0; i < img.data.length; i += 4) {
+    const n = (Math.random() - 0.5) * 12;
+    img.data[i] += n; img.data[i + 1] += n; img.data[i + 2] += n;
+  }
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.RepeatWrapping;
+  tex.magFilter = THREE.LinearFilter; tex.minFilter = THREE.LinearFilter;
+  return tex;
+}
+
+const floorMatL2 = new THREE.MeshStandardMaterial({ color: '#a7a9ab', roughness: 0.52, metalness: 0.05 });
+const ceilMatL2 = new THREE.MeshStandardMaterial({ color: '#3d4044', roughness: 0.6, metalness: 0.3 });
+const rackFrameMat = new THREE.MeshStandardMaterial({ color: '#356f9e', roughness: 0.5, metalness: 0.55 });
+const rackBeamMat = new THREE.MeshStandardMaterial({ color: '#d97706', roughness: 0.45, metalness: 0.5 });
+const palletWoodMat = new THREE.MeshStandardMaterial({ color: '#8b6b3d', roughness: 0.85, metalness: 0.0 });
+const cardboardMat = new THREE.MeshStandardMaterial({ color: '#b59a6b', roughness: 0.9, metalness: 0.0 });
+const shrinkWrapMat = new THREE.MeshStandardMaterial({ color: '#d5dde2', roughness: 0.55, metalness: 0.0, transparent: true, opacity: 0.45 });
+const forkliftMat = new THREE.MeshStandardMaterial({ color: '#e0a020', roughness: 0.4, metalness: 0.3 });
+const tireMat = new THREE.MeshStandardMaterial({ color: '#191b1d', roughness: 0.9, metalness: 0.0 });
+const steelBeamMat = new THREE.MeshStandardMaterial({ color: '#4e5358', roughness: 0.5, metalness: 0.7 });
+
+// ==================== Level 2 苏式园林材质与纹理 ====================
+function buildGardenWallTexture() {
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 512;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#e8e2d6';
+  ctx.fillRect(0, 0, 512, 512);
+  // 白粉墙微妙色斑与雨痕
+  for (let i = 0; i < 14; i++) {
+    const x = Math.random() * 512, y = Math.random() * 512, r = 30 + Math.random() * 90;
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, 'rgba(160,155,140,0.10)');
+    g.addColorStop(1, 'rgba(160,155,140,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+  // 底部青苔与潮痕
+  const moss = ctx.createLinearGradient(0, 330, 0, 512);
+  moss.addColorStop(0, 'rgba(90,110,80,0)');
+  moss.addColorStop(0.55, 'rgba(90,110,80,0.16)');
+  moss.addColorStop(1, 'rgba(70,90,60,0.28)');
+  ctx.fillStyle = moss;
+  ctx.fillRect(0, 330, 512, 182);
+  // 砖缝横线（白粉墙常见）
+  ctx.strokeStyle = 'rgba(0,0,0,0.05)'; ctx.lineWidth = 1;
+  for (let y = 64; y < 512; y += 64) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(512, y); ctx.stroke();
+  }
+  const img = ctx.getImageData(0, 0, 512, 512);
+  for (let i = 0; i < img.data.length; i += 4) {
+    const n = (Math.random() - 0.5) * 10;
+    img.data[i] += n; img.data[i + 1] += n; img.data[i + 2] += n;
+  }
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.RepeatWrapping;
+  tex.magFilter = THREE.LinearFilter; tex.minFilter = THREE.LinearFilter;
+  return tex;
+}
+
+function buildGardenFloorTexture() {
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 512;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#8e908a';
+  ctx.fillRect(0, 0, 512, 512);
+  const img = ctx.getImageData(0, 0, 512, 512);
+  for (let i = 0; i < img.data.length; i += 4) {
+    const n = (Math.random() - 0.5) * 20;
+    img.data[i] += n; img.data[i + 1] += n; img.data[i + 2] += n;
+  }
+  ctx.putImageData(img, 0, 0);
+  // 青石板铺地：不规则矩形石板 + 灰缝
+  ctx.strokeStyle = 'rgba(30,32,28,0.55)';
+  ctx.lineWidth = 3;
+  let y = 0;
+  while (y < 512) {
+    const rowH = 48 + Math.random() * 40;
+    let x = 0;
+    while (x < 512) {
+      const w = 64 + Math.random() * 80;
+      ctx.strokeRect(x + 2, y + 2, w - 4, rowH - 4);
+      x += w;
+    }
+    y += rowH;
+  }
+  // 青苔与湿斑
+  for (let i = 0; i < 10; i++) {
+    const x = Math.random() * 512, y = Math.random() * 512, r = 20 + Math.random() * 55;
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, 'rgba(70,95,70,0.20)');
+    g.addColorStop(1, 'rgba(70,95,70,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.RepeatWrapping;
+  tex.magFilter = THREE.LinearFilter; tex.minFilter = THREE.LinearFilter;
+  return tex;
+}
+
+const floorMatGarden = new THREE.MeshStandardMaterial({ color: '#b0b2aa', roughness: 0.8, metalness: 0.0 });
+const gardenWoodMat = new THREE.MeshStandardMaterial({ color: '#6e3f2e', roughness: 0.7, metalness: 0.0 });
+const gardenStoneMat = new THREE.MeshStandardMaterial({ color: '#9a9c96', roughness: 0.9, metalness: 0.0 });
+const gardenTileMat = new THREE.MeshStandardMaterial({ color: '#3a3d40', roughness: 0.6, metalness: 0.15 });
+const gardenRoofMat = new THREE.MeshStandardMaterial({ color: '#4c4a44', roughness: 0.65, metalness: 0.1, side: THREE.DoubleSide });
+const gardenLanternMat = new THREE.MeshStandardMaterial({ color: '#d03020', emissive: '#ff4020', emissiveIntensity: 0.9, roughness: 0.55, metalness: 0.0 });
+const gardenLanternFrameMat = new THREE.MeshStandardMaterial({ color: '#3a2c1e', roughness: 0.8, metalness: 0.0 });
+const gardenWaterMat = new THREE.MeshStandardMaterial({ color: '#3f6e6a', roughness: 0.12, metalness: 0.1, transparent: true, opacity: 0.72 });
+const bambooMat = new THREE.MeshStandardMaterial({ color: '#5d7d3a', roughness: 0.7, metalness: 0.0 });
+const gardenLeafMat = new THREE.MeshStandardMaterial({ color: '#4f7a35', roughness: 0.8, metalness: 0.0, side: THREE.DoubleSide });
+const gardenWindowBackMat = new THREE.MeshStandardMaterial({ color: '#2e2b26', roughness: 0.9, metalness: 0.0 });
+const gardenGoldMat = new THREE.MeshStandardMaterial({ color: '#b8860b', roughness: 0.4, metalness: 0.7 });
 
 // ==================== 场景构建 ====================
 
@@ -472,123 +993,977 @@ function preloadModel(name) {
   });
 }
 
-// 创建模型实例，缩放到目标尺寸
-function createModelInstance(name, targetW, targetH, targetD) {
+// 创建模型实例：按轴缩放到目标尺寸，可绕 Y 旋转。
+// 克隆体与 modelStore 共享几何体/材质（打标 isModelMesh 供 dispose 区分，避免误释放共享资源）。
+function createModelInstance(name, targetW, targetH, targetD, rotY = 0) {
   const entry = modelStore[name];
   if (!entry) return null;
   const clone = entry.scene.clone();
-  const sw = targetW ? targetW / entry.size.x : 1;
-  const sh = targetH ? targetH / entry.size.y : 1;
-  const sd = targetD ? targetD / entry.size.z : 1;
-  const s = Math.max(sw, sh, sd);
-  clone.scale.setScalar(s);
+  clone.scale.set(
+    targetW ? targetW / entry.size.x : 1,
+    targetH ? targetH / entry.size.y : 1,
+    targetD ? targetD / entry.size.z : 1
+  );
+  if (rotY) clone.rotation.y = rotY;
+  clone.traverse(o => { o.userData.isModelMesh = true; });
   return clone;
 }
 
-// 替换程序化物体为 GLB 模型
-function replaceWithModel(name, proceduralMesh, w, h, d) {
-  if (modelStore[name]) {
-    const m = createModelInstance(name, w, h, d);
-    if (m) {
-      m.position.copy(proceduralMesh.position);
-      worldGroup.remove(proceduralMesh);
-      worldGroup.add(m);
-      console.log('🔁 替换: ' + name + ' @ (' + m.position.x.toFixed(0) + ',' + m.position.z.toFixed(0) + ')');
-      return m;
+// ==================== 静态几何合并（大幅降低 draw call） ====================
+// 把大量同材质的小 mesh 合并成少量大 mesh：构建时收集 → 构建末 flushMerged()。
+// 逐房间闪烁的 diffuser 面板（材质逐实例克隆）等仍保留独立 mesh。
+const mergeBuckets = new Map(); // material -> BufferGeometry[]
+
+// 把 mesh 的几何体（烘焙世界变换）收进材质桶；程序化几何体收集后即释放
+// （共享几何体打上 userData.shared 标记则不在此释放，由调用方统一处理）
+function collectStatic(mesh) {
+  const mat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+  if (!mat || !mesh.geometry) return;
+  let bucket = mergeBuckets.get(mat);
+  if (!bucket) { bucket = []; mergeBuckets.set(mat, bucket); }
+  const g = mesh.geometry.clone();
+  mesh.updateWorldMatrix(true, false);
+  g.applyMatrix4(mesh.matrixWorld);
+  bucket.push(g);
+  if (!mesh.userData.isModelMesh && !mesh.geometry.userData.shared) mesh.geometry.dispose();
+}
+
+// 遍历 group，把非 keepNames 的 mesh 收进合并桶并从场景移除；返回是否还有保留的 mesh
+function collectGroupStatic(group, keepNames = []) {
+  const toRemove = [];
+  group.traverse(o => {
+    if (o.isMesh && !keepNames.includes(o.name)) {
+      collectStatic(o);
+      toRemove.push(o);
+    }
+  });
+  toRemove.forEach(o => { if (o.parent) o.parent.remove(o); });
+  return group.children.length > 0;
+}
+
+// Level 1: 灯具吊线（2 根）+ 天花板接线盒（group 局部坐标；随灯具被 collectGroupStatic 合并）
+function addHangingCords(group) {
+  for (const zc of [-1.6, 1.6]) {
+    const cord = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.82, 6), cordMat);
+    cord.position.set(0, 0.45, zc); // 上至天花板(0.86)，下接灯壳(0.04)
+    group.add(cord);
+  }
+  const jbox = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.10, 0.18), pipeMat);
+  jbox.position.set(0, 0.79, 0);
+  group.add(jbox);
+}
+
+// Level 2 高位灯吊链：面板 drop=1.7m，吊链从天花板接至灯壳
+function addHighBayCords(group) {
+  for (const zc of [-1.6, 1.6]) {
+    const cord = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 1.62, 6), cordMat);
+    cord.position.set(0, 0.85, zc);
+    group.add(cord);
+  }
+  const jbox = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.10, 0.18), pipeMat);
+  jbox.position.set(0, 1.56, 0);
+  group.add(jbox);
+}
+
+// ==================== 墙体建模增强（L0 护墙板/腰线/顶角线，L1 墙顶盖板/伸缩缝/门套） ====================
+function addTrimStatic(mesh) {
+  collectStatic(mesh);
+}
+
+// L0 墙面装饰：顶角线 + 腰线 + 护墙板竖框（材质 trimMat，并入合并桶）
+function addL0WallMolding(cx, cz, length, alongX) {
+  const t = CFG.wallThick;
+  const depth = t + 0.045;
+  // 顶部冠线
+  const crown = new THREE.Mesh(new THREE.BoxGeometry(alongX ? length : depth, 0.09, alongX ? depth : length), trimMat);
+  crown.position.set(cx, CFG.roomH - 0.03, cz);
+  addTrimStatic(crown);
+  // 腰线（chair rail）
+  const rail = new THREE.Mesh(new THREE.BoxGeometry(alongX ? length : depth, 0.07, alongX ? depth : length), trimMat);
+  rail.position.set(cx, 0.85, cz);
+  addTrimStatic(rail);
+  // 护墙板竖框：从踢脚线到腰线
+  if (length > 2.0) {
+    const step = 1.05;
+    const y = 0.47, h = 0.695;
+    for (let p = -length / 2 + 0.45; p <= length / 2 - 0.45; p += step) {
+      const strip = new THREE.Mesh(new THREE.BoxGeometry(alongX ? 0.035 : t + 0.015, h, alongX ? t + 0.015 : 0.035), trimMat);
+      strip.position.set(alongX ? cx + p : cx, y, alongX ? cz : cz + p);
+      addTrimStatic(strip);
     }
   }
-  return null;
 }
 
-// 模型就绪回调队列
-const modelCallbacks = {};
-function onModelReady(name, cb) {
-  if (modelStore[name]) { cb(); return; }
-  if (!modelCallbacks[name]) modelCallbacks[name] = [];
-  modelCallbacks[name].push(cb);
-}
-// 模型加载完成后执行回调
-const origPreload = preloadModel;
-preloadModel = function(name) {
-  return origPreload(name).then(entry => {
-    if (entry && modelCallbacks[name]) {
-      modelCallbacks[name].forEach(cb => cb());
-      delete modelCallbacks[name];
+// L1 墙面工业细节：墙顶金属盖板 + 竖向伸缩缝条
+function addL1WallDetails(cx, cz, length, alongX) {
+  const t = CFG.wallThick;
+  const depth = t + 0.12;
+  // 墙顶盖板
+  const cap = new THREE.Mesh(new THREE.BoxGeometry(alongX ? length : depth, 0.14, alongX ? depth : length), steelDoorFrameMat);
+  cap.position.set(cx, CFG.roomH - 0.03, cz);
+  addTrimStatic(cap);
+  // 竖向伸缩缝
+  if (length > 2.2) {
+    const step = 2.4;
+    const y = CFG.roomH * 0.5, h = CFG.roomH - 0.5;
+    for (let p = -length / 2 + 1.0; p <= length / 2 - 0.8; p += step) {
+      const seam = new THREE.Mesh(new THREE.BoxGeometry(alongX ? 0.04 : t + 0.02, h, alongX ? t + 0.02 : 0.04), steelDoorFrameMat);
+      seam.position.set(alongX ? cx + p : cx, y, alongX ? cz : cz + p);
+      addTrimStatic(seam);
     }
-    return entry;
-  });
-};
+  }
+}
 
-// 启动加载
-Promise.all([
-  preloadModel('exit_door'),
-  preloadModel('almond_water')
-]).then(() => console.log('✅ 全部模型就绪'));
+// 门洞门套 + 过梁填充：让门洞不再是一个“硬缺口”
+function addDoorFrame(cx, cz, alongX, doorW, doorH) {
+  const t = CFG.wallThick;
+  const trimW = 0.13;
+  const depth = t + 0.10;
+  const mat = CFG.theme === 'warehouse' ? steelDoorFrameMat : CFG.theme === 'garden' ? gardenWoodMat : trimMat;
+  const hw = doorW / 2 + trimW / 2;
+  // 左右门套
+  for (const side of [-1, 1]) {
+    const jamb = new THREE.Mesh(new THREE.BoxGeometry(alongX ? trimW : depth, doorH, alongX ? depth : trimW), mat);
+    jamb.position.set(alongX ? cx + side * hw : cx, doorH / 2, alongX ? cz : cz + side * hw);
+    addTrimStatic(jamb);
+  }
+  // 顶部门套
+  const topTrim = new THREE.Mesh(new THREE.BoxGeometry(alongX ? doorW + trimW * 2 : depth, trimW, alongX ? depth : doorW + trimW * 2), mat);
+  topTrim.position.set(cx, doorH + trimW / 2, cz);
+  addTrimStatic(topTrim);
+  // 门洞上方墙体填充（过梁），使用随机墙材质
+  const headerH = (CFG.roomH + 0.08) - doorH - trimW;
+  if (headerH > 0.05) {
+    const header = new THREE.Mesh(new THREE.BoxGeometry(alongX ? doorW + 0.06 : t, headerH, alongX ? t : doorW + 0.06), pickWallMaterial());
+    header.position.set(cx, doorH + trimW + headerH / 2, cz);
+    addTrimStatic(header);
+  }
+}
+
+// Level 1 高金属货架（仓储区）— 四立柱 + 4 层板 + 架上杂物，全部并入合并桶
+function buildStorageShelf(sx, sz, rotY = 0) {
+  const W = 2.4, D = 0.6, H = 2.4;
+  const hw = W / 2, hd = D / 2;
+  const cR = Math.cos(rotY), sR = Math.sin(rotY);
+  const place = (ox, oy, oz) => ({
+    x: sx + ox * cR - oz * sR,
+    y: oy,
+    z: sz + ox * sR + oz * cR
+  });
+  const add = (mesh, ox, oy, oz) => {
+    const p = place(ox, oy, oz);
+    mesh.position.set(p.x, p.y, p.z);
+    mesh.rotation.y = rotY;
+    collectStatic(mesh);
+  };
+  // 四角立柱
+  for (const [dx, dz] of [[-hw, -hd], [hw, -hd], [-hw, hd], [hw, hd]]) {
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.05, H, 0.05), shelfMat), dx, H / 2, dz);
+  }
+  // 层板（4 层）
+  for (let i = 0; i < 4; i++) {
+    add(new THREE.Mesh(new THREE.BoxGeometry(W, 0.04, D), shelfMat), 0, 0.6 + i * 0.6, 0);
+  }
+  // 架上杂物（0-2 个箱/桶）
+  for (let i = 0; i < 2; i++) {
+    if (Math.random() < 0.7) {
+      const y = 0.6 + Math.floor(Math.random() * 3) * 0.6 + 0.15;
+      const isBox = Math.random() < 0.6;
+      const w = isBox ? 0.4 + Math.random() * 0.2 : 0.3;
+      const d = isBox ? w : 0.3;
+      const geo = isBox
+        ? new THREE.BoxGeometry(w, w * 0.7, d)
+        : new THREE.CylinderGeometry(0.28, 0.28, 0.55, 10);
+      add(new THREE.Mesh(geo, isBox ? crateMat : drumMat),
+        (Math.random() - 0.5) * (W - w - 0.25), y, (Math.random() - 0.5) * (D - d - 0.12));
+    }
+  }
+  // 挡路碰撞（旋转后取轴向 AABB）
+  wallColliders.push({
+    minX: sx - (hw * Math.abs(cR) + hd * Math.abs(sR)),
+    maxX: sx + (hw * Math.abs(cR) + hd * Math.abs(sR)),
+    minZ: sz - (hw * Math.abs(sR) + hd * Math.abs(cR)),
+    maxZ: sz + (hw * Math.abs(sR) + hd * Math.abs(cR))
+  });
+}
+
+// Level 1 工业卷帘门 — 贴在房间实墙内面（纯装饰，无碰撞：门洞判定由 solidSideForRoom 保证选实墙）
+function buildRollerDoor(px, pz, alongX) {
+  const W = 3.2, H = 3.0;
+  const panel = new THREE.Mesh(
+    new THREE.BoxGeometry(alongX ? W : 0.08, H, alongX ? 0.08 : W), rollerDoorMat);
+  panel.position.set(px, H / 2, pz);
+  collectStatic(panel);
+  // 顶部卷筒
+  const drum = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, W + 0.15, 10), steelDoorFrameMat);
+  if (alongX) drum.rotation.z = Math.PI / 2; else drum.rotation.x = Math.PI / 2;
+  drum.position.set(px, H + 0.13, pz);
+  collectStatic(drum);
+  // 两侧导轨
+  for (const off of [-W / 2, W / 2]) {
+    const rail = new THREE.Mesh(
+      new THREE.BoxGeometry(alongX ? 0.05 : 0.08, H + 0.08, alongX ? 0.08 : 0.05), steelDoorFrameMat);
+    rail.position.set(alongX ? px + off : px, H / 2 + 0.04, alongX ? pz : pz + off);
+    collectStatic(rail);
+  }
+}
+
+// L2 外圈升降门：四面外墙各 1 个，模拟仓库月台门（装饰，无碰撞）
+function buildL2DockDoors() {
+  const mapW = CFG.gridW * CFG.roomSize;
+  const mapH = CFG.gridH * CFG.roomSize;
+  const inOff = CFG.wallThick / 2 + 0.35;
+  const slots = [
+    { px: inOff, pz: mapH * 0.35, alongX: false },
+    { px: mapW - inOff, pz: mapH * 0.62, alongX: false },
+    { px: mapW * 0.30, pz: inOff, alongX: true },
+    { px: mapW * 0.68, pz: mapH - inOff, alongX: true }
+  ];
+  for (const sl of slots) buildDockDoor(sl.px, sl.pz, sl.alongX);
+}
+
+// 返回房间 (x,z) 一个实墙侧（用于贴卷帘门），无则 null
+function solidSideForRoom(x, z) {
+  const w = maze[z][x].walls;
+  const t = CFG.wallThick / 2 + 0.05; // 门板中心距墙中心线（内面外推）
+  const cands = [];
+  if (w.n) cands.push({ px: roomCenterX(x), pz: roomCenterZ(z) + CFG.roomSize / 2 - t, alongX: true });
+  if (w.s) cands.push({ px: roomCenterX(x), pz: roomCenterZ(z) - CFG.roomSize / 2 + t, alongX: true });
+  if (w.e) cands.push({ px: roomCenterX(x) + CFG.roomSize / 2 - t, pz: roomCenterZ(z), alongX: false });
+  if (w.w) cands.push({ px: roomCenterX(x) - CFG.roomSize / 2 + t, pz: roomCenterZ(z), alongX: false });
+  if (!cands.length) return null;
+  return cands[Math.floor(Math.random() * cands.length)];
+}
+
+// ==================== Level 2 现实仓库道具 ====================
+const hazardStripeTex = buildHazardStripeTexture();
+const hazardStripeMat = new THREE.MeshStandardMaterial({ map: hazardStripeTex, roughness: 0.6, metalness: 0.1 });
+
+// 托盘堆（木托盘 + 纸箱 + 缠绕膜）
+function buildPalletStack(sx, sz, rotY = 0) {
+  const W = 1.2, D = 1.0;
+  const cR = Math.cos(rotY), sR = Math.sin(rotY);
+  const place = (ox, oy, oz) => ({
+    x: sx + ox * cR - oz * sR,
+    y: oy,
+    z: sz + ox * sR + oz * cR
+  });
+  const add = (mesh, ox, oy, oz) => {
+    const p = place(ox, oy, oz);
+    mesh.position.set(p.x, p.y, p.z);
+    mesh.rotation.y = rotY;
+    collectStatic(mesh);
+  };
+  // 木托盘（3 条纵梁 + 面板）
+  for (const ox of [-0.55, 0, 0.55]) {
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.08, D), palletWoodMat), ox, 0.04, 0);
+  }
+  add(new THREE.Mesh(new THREE.BoxGeometry(W, 0.05, D), palletWoodMat), 0, 0.08, 0);
+  // 纸箱堆
+  const rows = 1 + Math.floor(Math.random() * 2);
+  for (let r = 0; r < rows; r++) {
+    const bw = 0.55 + Math.random() * 0.4;
+    const bd = 0.45 + Math.random() * 0.35;
+    const bh = 0.35 + Math.random() * 0.3;
+    add(new THREE.Mesh(new THREE.BoxGeometry(bw, bh, bd), cardboardMat),
+      (Math.random() - 0.5) * 0.5, 0.12 + bh / 2 + r * 0.5, (Math.random() - 0.5) * 0.35);
+  }
+  // 半透明缠绕膜
+  add(new THREE.Mesh(new THREE.BoxGeometry(1.08, 1.05 + rows * 0.25, 0.92), shrinkWrapMat),
+    0, 0.6 + rows * 0.12, 0);
+  // 挡路碰撞（旋转后 AABB）
+  const hw = 0.75, hd = 0.7;
+  wallColliders.push({
+    minX: sx - (hw * Math.abs(cR) + hd * Math.abs(sR)),
+    maxX: sx + (hw * Math.abs(cR) + hd * Math.abs(sR)),
+    minZ: sz - (hw * Math.abs(sR) + hd * Math.abs(cR)),
+    maxZ: sz + (hw * Math.abs(sR) + hd * Math.abs(cR))
+  });
+}
+
+// 高位货架：蓝色立柱 + 橙色横梁 + 每层托盘货
+function buildWarehouseRack(sx, sz, rotY = 0) {
+  const W = 5.8, D = 1.1, H = 5.2;
+  const hw = W / 2, hd = D / 2;
+  const cR = Math.cos(rotY), sR = Math.sin(rotY);
+  const place = (ox, oy, oz) => ({
+    x: sx + ox * cR - oz * sR,
+    y: oy,
+    z: sz + ox * sR + oz * cR
+  });
+  const add = (mesh, ox, oy, oz) => {
+    const p = place(ox, oy, oz);
+    mesh.position.set(p.x, p.y, p.z);
+    mesh.rotation.y = rotY;
+    collectStatic(mesh);
+  };
+  // 四角立柱 + 端面斜撑
+  for (const dx of [-hw, hw]) {
+    for (const dz of [-hd, hd]) {
+      add(new THREE.Mesh(new THREE.BoxGeometry(0.14, H, 0.14), rackFrameMat), dx, H / 2, dz);
+      add(new THREE.Mesh(new THREE.BoxGeometry(0.08, H * 0.55, 0.08), rackFrameMat), dx, H * 0.32, dz * 0.4);
+    }
+  }
+  // 横梁（前后各 4 层）
+  for (const y of [0.9, 2.0, 3.1, 4.2]) {
+    for (const dz of [-hd, hd]) {
+      add(new THREE.Mesh(new THREE.BoxGeometry(W, 0.12, 0.1), rackBeamMat), 0, y, dz);
+    }
+  }
+  // 每层托盘货（简化：托盘 + 箱体）
+  for (const y of [1.05, 2.15, 3.25, 4.35]) {
+    if (Math.random() < 0.85) {
+      add(new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.08, 0.95), palletWoodMat), 0, y, 0);
+      const bw = 0.7 + Math.random() * 0.35;
+      const bh = 0.45 + Math.random() * 0.35;
+      add(new THREE.Mesh(new THREE.BoxGeometry(bw, bh, 0.85), cardboardMat), 0, y + 0.08 + bh / 2, 0);
+    }
+  }
+  // 碰撞体（旋转后 AABB）
+  wallColliders.push({
+    minX: sx - (hw * Math.abs(cR) + hd * Math.abs(sR)),
+    maxX: sx + (hw * Math.abs(cR) + hd * Math.abs(sR)),
+    minZ: sz - (hw * Math.abs(sR) + hd * Math.abs(cR)),
+    maxZ: sz + (hw * Math.abs(sR) + hd * Math.abs(cR))
+  });
+}
+
+// 叉车：车体 + 门架 + 货叉 + 轮胎
+function buildForklift(sx, sz, rotY = 0) {
+  const cR = Math.cos(rotY), sR = Math.sin(rotY);
+  const place = (ox, oy, oz) => ({
+    x: sx + ox * cR - oz * sR,
+    y: oy,
+    z: sz + ox * sR + oz * cR
+  });
+  const add = (mesh, ox, oy, oz) => {
+    const p = place(ox, oy, oz);
+    mesh.position.set(p.x, p.y, p.z);
+    mesh.rotation.y = rotY;
+    collectStatic(mesh);
+  };
+  add(new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.75, 1.7), forkliftMat), 0, 0.62, 0.1);
+  add(new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.35, 0.7), forkliftMat), 0, 1.05, -0.5);
+  // 门架 + 货叉
+  for (const fx of [-0.32, 0.32]) {
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.5, 0.1), steelBeamMat), fx, 0.9, -1.15);
+  }
+  add(new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.1, 0.08), steelBeamMat), 0, 1.65, -1.15);
+  for (const fx of [-0.22, 0.22]) {
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.06, 0.85), steelBeamMat), fx, 0.18, -1.0);
+  }
+  // 轮胎
+  for (const [wx, wz, wr] of [[-0.45, 0.55, 0], [0.45, 0.55, 0], [-0.45, -0.7, 0], [0.45, -0.7, 0]]) {
+    const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.24, 0.18, 12), tireMat);
+    const p = place(wx, 0.24, wz);
+    wheel.position.set(p.x, p.y, p.z);
+    wheel.rotation.x = Math.PI / 2;
+    wheel.rotation.y = rotY;
+    collectStatic(wheel);
+  }
+  wallColliders.push({
+    minX: sx - 1.0, maxX: sx + 1.0,
+    minZ: sz - 1.4, maxZ: sz + 1.4
+  });
+}
+
+// 现实仓库升降门（卷帘门 + 黄黑警示柱 + 门头灯）
+function buildDockDoor(px, pz, alongX) {
+  const W = 4.4, H = 4.8;
+  const panel = new THREE.Mesh(
+    new THREE.BoxGeometry(alongX ? W : 0.09, H, alongX ? 0.09 : W), rollerDoorMat);
+  panel.position.set(px, H / 2, pz);
+  collectStatic(panel);
+  // 门框
+  const frameTop = new THREE.Mesh(
+    new THREE.BoxGeometry(alongX ? W + 0.5 : 0.3, 0.3, alongX ? 0.3 : W + 0.5), steelBeamMat);
+  frameTop.position.set(px, H + 0.15, pz);
+  collectStatic(frameTop);
+  for (const off of [-W / 2, W / 2]) {
+    const post = new THREE.Mesh(
+      new THREE.BoxGeometry(alongX ? 0.22 : 0.3, H + 0.3, alongX ? 0.3 : 0.22), hazardStripeMat);
+    post.position.set(alongX ? px + off : px, H / 2 + 0.15, alongX ? pz : pz + off);
+    collectStatic(post);
+  }
+  // 门头灯
+  const dockLamp = new THREE.Mesh(
+    new THREE.BoxGeometry(alongX ? 0.5 : 0.18, 0.18, alongX ? 0.18 : 0.5),
+    new THREE.MeshStandardMaterial({ color: '#ffcc33', emissive: '#ff8800', emissiveIntensity: 0.8, roughness: 0.3, metalness: 0.2 }));
+  dockLamp.position.set(px, H + 0.4, pz);
+  worldGroup.add(dockLamp);
+  dockLamp.userData.ownedMaterials = [dockLamp.material];
+}
+
+// L2 结构：屋顶钢梁 + 长程风管（大开间工业感）
+function buildL2Structure() {
+  const mapW = CFG.gridW * CFG.roomSize;
+  const mapH = CFG.gridH * CFG.roomSize;
+  const y = CFG.roomH - 0.25;
+  for (let x = 0; x <= CFG.gridW; x++) {
+    const beam = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.55, mapH), steelBeamMat);
+    beam.position.set(x * CFG.roomSize, y, mapH / 2);
+    collectStatic(beam);
+  }
+  for (let z = 0; z <= CFG.gridH; z++) {
+    const beam = new THREE.Mesh(new THREE.BoxGeometry(mapW, 0.55, 0.3), steelBeamMat);
+    beam.position.set(mapW / 2, y, z * CFG.roomSize);
+    collectStatic(beam);
+  }
+  // 空调风管
+  for (const dz of [CFG.roomSize * 1.5, mapH - CFG.roomSize * 1.5]) {
+    const duct = new THREE.Mesh(new THREE.BoxGeometry(mapW - 6, 0.7, 0.9), ductMat);
+    duct.position.set(mapW / 2, CFG.roomH - 0.9, dz);
+    collectStatic(duct);
+  }
+}
+
+// L2 每房间布置：货架 + 托盘堆 + 叉车
+function buildL2WarehouseRoom(x, z) {
+  const cx = roomCenterX(x), cz = roomCenterZ(z);
+  const off = CFG.roomSize * 0.30;
+  // 主货架：靠一侧墙，避免堵门
+  if (Math.random() < 0.85) {
+    const north = Math.random() < 0.5;
+    if (north) buildWarehouseRack(cx, cz - off, 0);
+    else buildWarehouseRack(cx - off, cz, Math.PI / 2);
+  }
+  // 第二货架/托盘堆
+  if (Math.random() < 0.6) {
+    const south = Math.random() < 0.5;
+    if (south) buildPalletStack(cx + (Math.random() - 0.5) * 4, cz + off, Math.random() * Math.PI);
+    else buildPalletStack(cx + off, cz + (Math.random() - 0.5) * 4, Math.random() * Math.PI);
+  } else {
+    buildPalletStack(cx - off * 0.8, cz + off * 0.8, Math.random() * Math.PI);
+  }
+  // 叉车
+  if (Math.random() < 0.22) {
+    buildForklift(cx + (Math.random() - 0.5) * 3.0, cz + (Math.random() - 0.5) * 3.0, Math.random() * Math.PI);
+  }
+  // 黄黑警示踢脚线已由每房踢脚线统一处理（见 baseboard 循环）
+}
+
+// ==================== 苏式园林构件 ====================
+// 白墙黛瓦：双层瓦檐 + 檐下线脚 + 墙面漏窗
+function addGardenWallMolding(cx, cz, length, alongX) {
+  const t = CFG.wallThick;
+  const y = CFG.roomH - 0.04;
+  // 两层瓦檐（上窄下宽）
+  const cap1 = new THREE.Mesh(new THREE.BoxGeometry(alongX ? length : t + 0.30, 0.10, alongX ? t + 0.30 : length), gardenTileMat);
+  cap1.position.set(cx, y + 0.03, cz);
+  collectStatic(cap1);
+  const cap2 = new THREE.Mesh(new THREE.BoxGeometry(alongX ? length + 0.08 : t + 0.18, 0.10, alongX ? t + 0.18 : length + 0.08), gardenTileMat);
+  cap2.position.set(cx, y - 0.07, cz);
+  collectStatic(cap2);
+  // 檐下木线脚
+  const line = new THREE.Mesh(new THREE.BoxGeometry(alongX ? length : t + 0.08, 0.05, alongX ? t + 0.08 : length), gardenWoodMat);
+  line.position.set(cx, y - 0.16, cz);
+  collectStatic(line);
+  // 漏窗（每 3m 一个，嵌在墙面上）
+  if (length > 3.0) {
+    const step = 3.1;
+    for (let p = -length / 2 + 1.6; p <= length / 2 - 1.6; p += step) {
+      const wx = alongX ? cx + p : cx;
+      const wz = alongX ? cz : cz + p;
+      // 窗洞深色底
+      const back = new THREE.Mesh(new THREE.BoxGeometry(alongX ? 0.90 : t + 0.02, 1.1, alongX ? t + 0.02 : 0.90), gardenWindowBackMat);
+      back.position.set(wx, 1.7, wz);
+      collectStatic(back);
+      // 窗框
+      const frame = new THREE.Mesh(new THREE.BoxGeometry(alongX ? 1.0 : t + 0.04, 1.2, alongX ? t + 0.04 : 1.0), gardenWoodMat);
+      frame.position.set(wx, 1.7, wz);
+      collectStatic(frame);
+      // 十字格心
+      const vbar = new THREE.Mesh(new THREE.BoxGeometry(alongX ? 0.04 : t + 0.03, 0.95, alongX ? t + 0.03 : 0.04), gardenWoodMat);
+      vbar.position.set(wx, 1.7, wz);
+      collectStatic(vbar);
+      const hbar = new THREE.Mesh(new THREE.BoxGeometry(alongX ? 0.95 : t + 0.03, 0.04, alongX ? t + 0.03 : 0.95), gardenWoodMat);
+      hbar.position.set(wx, 1.7, wz);
+      collectStatic(hbar);
+    }
+  }
+}
+
+// 园林亭子：石台基 + 柱础 + 木柱 + 枋 + 双层攒尖顶 + 美人靠 + 宝顶
+function buildGardenPavilion(sx, sz, rotY = 0) {
+  // 优先使用 Blender 导出的专业六角亭模型（pavilion.glb），失败才回退程序化
+  const pavilion = createModelInstance('pavilion', 7.0, 6.7, 7.0, rotY);
+  if (pavilion) {
+    pavilion.position.set(sx, 0, sz);
+    pavilion.rotation.y = rotY;
+    // 并入材质合并桶，保持低 draw call
+    if (collectGroupStatic(pavilion, [])) worldGroup.add(pavilion);
+  } else {
+    const g = new THREE.Group();
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(3.0, 3.3, 0.5, 6), gardenStoneMat);
+    base.position.y = 0.25;
+    g.add(base);
+    const roof = new THREE.Mesh(new THREE.ConeGeometry(3.4, 1.4, 6), gardenRoofMat);
+    roof.position.y = 4.3;
+    g.add(roof);
+    g.position.set(sx, 0, sz);
+    g.rotation.y = rotY;
+    if (collectGroupStatic(g, [])) worldGroup.add(g);
+  }
+  // 六角亭碰撞（外接 AABB 近似）
+  const half = 3.65;
+  wallColliders.push({ minX: sx - half, maxX: sx + half, minZ: sz - half, maxZ: sz + half });
+}
+
+// 假山：多块灰湖石堆叠 + 碎石 + 青苔点
+function buildGardenRockery(sx, sz) {
+  const n = 7 + Math.floor(Math.random() * 4);
+  for (let i = 0; i < n; i++) {
+    const big = i < 3;
+    const r = big ? 0.55 + Math.random() * 0.7 : 0.18 + Math.random() * 0.38;
+    const stone = new THREE.Mesh(new THREE.DodecahedronGeometry(r, 0), gardenStoneMat);
+    const scaleY = big ? 0.75 + Math.random() * 0.8 : 0.5 + Math.random() * 0.5;
+    stone.scale.set(0.75 + Math.random() * 0.7, scaleY, 0.7 + Math.random() * 0.7);
+    stone.position.set(
+      sx + (Math.random() - 0.5) * 2.8,
+      big ? 0.22 + scaleY * r * 0.35 : 0.08 + scaleY * r * 0.25,
+      sz + (Math.random() - 0.5) * 2.8
+    );
+    stone.rotation.set(Math.random() * 0.8, Math.random() * Math.PI, Math.random() * 0.8);
+    collectStatic(stone);
+  }
+  for (let i = 0; i < 4; i++) {
+    const moss = new THREE.Mesh(new THREE.CircleGeometry(0.2 + Math.random() * 0.25, 8), gardenLeafMat);
+    moss.rotation.x = -Math.PI / 2;
+    moss.position.set(sx + (Math.random() - 0.5) * 2.6, 0.04, sz + (Math.random() - 0.5) * 2.6);
+    collectStatic(moss);
+  }
+  wallColliders.push({ minX: sx - 1.8, maxX: sx + 1.8, minZ: sz - 1.8, maxZ: sz + 1.8 });
+}
+
+// 池塘：自然曲岸水面 + 荷叶 + 拱桥 + 岸石
+function buildGardenPond(sx, sz) {
+  const shape = new THREE.Shape();
+  const pts = 8;
+  for (let i = 0; i <= pts; i++) {
+    const a = (i / pts) * Math.PI * 2;
+    const r = 1.6 + Math.sin(a * 2.0) * 0.65 + Math.cos(a * 3.0) * 0.45;
+    const x = Math.cos(a) * r;
+    const y = Math.sin(a) * r;
+    if (i === 0) shape.moveTo(x, y); else shape.lineTo(x, y);
+  }
+  const pond = new THREE.Mesh(new THREE.ShapeGeometry(shape, 24), gardenWaterMat);
+  pond.rotation.x = -Math.PI / 2;
+  pond.position.set(sx, 0.05, sz);
+  worldGroup.add(pond);
+  for (let i = 0; i < 5; i++) {
+    const leaf = new THREE.Mesh(new THREE.CircleGeometry(0.25 + Math.random() * 0.3, 12), gardenLeafMat);
+    leaf.rotation.x = -Math.PI / 2;
+    leaf.position.set(sx + (Math.random() - 0.5) * 3.0, 0.07, sz + (Math.random() - 0.5) * 3.0);
+    collectStatic(leaf);
+  }
+  const bridgeY = 0.16;
+  const deck = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.10, 1.0), gardenStoneMat);
+  deck.position.set(sx, bridgeY, sz);
+  collectStatic(deck);
+  for (const side of [-1, 1]) {
+    const ramp = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.08, 1.0), gardenStoneMat);
+    ramp.position.set(sx + side * 1.45, bridgeY - 0.08, sz);
+    ramp.rotation.z = -side * 0.18;
+    collectStatic(ramp);
+    const rail = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.06, 0.06), gardenWoodMat);
+    rail.position.set(sx, bridgeY + 0.22, sz + side * 0.45);
+    collectStatic(rail);
+  }
+  for (let i = 0; i < 6; i++) {
+    const stone = new THREE.Mesh(new THREE.DodecahedronGeometry(0.14 + Math.random() * 0.2, 0), gardenStoneMat);
+    stone.scale.y = 0.6;
+    stone.position.set(sx + (Math.random() - 0.5) * 4.0, 0.07, sz + (Math.random() - 0.5) * 4.0);
+    collectStatic(stone);
+  }
+}
+
+// 竹林：分节竹竿 + 竹节环 + 竹叶
+function buildGardenBamboo(sx, sz) {
+  const n = 6 + Math.floor(Math.random() * 5);
+  for (let i = 0; i < n; i++) {
+    const x = sx + (Math.random() - 0.5) * 3.6;
+    const z = sz + (Math.random() - 0.5) * 3.6;
+    const h = 2.2 + Math.random() * 1.8;
+    const seg = 2 + Math.floor(Math.random() * 2);
+    for (let s = 0; s < seg; s++) {
+      const segH = h / seg;
+      const radius = 0.055 - s * 0.008;
+      const stalk = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius * 1.15, segH, 6), bambooMat);
+      stalk.position.set(x, segH * s + segH / 2, z);
+      collectStatic(stalk);
+      const node = new THREE.Mesh(new THREE.TorusGeometry(radius * 1.2, 0.012, 5, 6), bambooMat);
+      node.rotation.x = Math.PI / 2;
+      node.position.set(x, segH * s + segH, z);
+      collectStatic(node);
+    }
+    const leaves = 4 + Math.floor(Math.random() * 4);
+    for (let l = 0; l < leaves; l++) {
+      const leaf = new THREE.Mesh(new THREE.ConeGeometry(0.16 + Math.random() * 0.12, 0.8 + Math.random() * 0.5, 4), gardenLeafMat);
+      leaf.scale.set(1, 1, 0.25);
+      leaf.position.set(x + (Math.random() - 0.5) * 0.8, h - 0.3 - Math.random() * 0.4, z + (Math.random() - 0.5) * 0.8);
+      leaf.rotation.set(Math.random() * 1.2, Math.random() * Math.PI, Math.random() * 1.2);
+      collectStatic(leaf);
+    }
+  }
+  wallColliders.push({ minX: sx - 1.7, maxX: sx + 1.7, minZ: sz - 1.7, maxZ: sz + 1.7 });
+}
+
+// 红灯笼：石座 + 木杆 + 横挑 + 六角灯笼 + 金顶 + 流苏
+function buildGardenLantern(sx, sz) {
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.22, 0.25, 8), gardenStoneMat);
+  base.position.set(sx, 0.13, sz);
+  collectStatic(base);
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.06, 2.3, 7), gardenLanternFrameMat);
+  pole.position.set(sx, 1.28, sz);
+  collectStatic(pole);
+  const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.7, 6), gardenLanternFrameMat);
+  arm.rotation.z = Math.PI / 2;
+  arm.position.set(sx - 0.30, 2.42, sz);
+  collectStatic(arm);
+  const lamp = new THREE.Mesh(new THREE.CylinderGeometry(0.20, 0.24, 0.48, 6), gardenLanternMat);
+  lamp.position.set(sx - 0.62, 2.28, sz);
+  collectStatic(lamp);
+  const top = new THREE.Mesh(new THREE.CylinderGeometry(0.10, 0.20, 0.10, 6), gardenGoldMat);
+  top.position.set(sx - 0.62, 2.56, sz);
+  collectStatic(top);
+  const finial = new THREE.Mesh(new THREE.SphereGeometry(0.04, 6, 5), gardenGoldMat);
+  finial.position.set(sx - 0.62, 2.64, sz);
+  collectStatic(finial);
+  const tassel = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.05, 0.28, 6), gardenGoldMat);
+  tassel.position.set(sx - 0.62, 1.92, sz);
+  collectStatic(tassel);
+}
+
+// 园中花木：小乔木（树干 + 三层树冠）
+function buildGardenTree(sx, sz) {
+  const h = 2.4 + Math.random() * 0.8;
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.13, h * 0.55, 7), gardenWoodMat);
+  trunk.position.set(sx, h * 0.28, sz);
+  collectStatic(trunk);
+  for (let i = 0; i < 3; i++) {
+    const r = 0.9 - i * 0.18;
+    const leaf = new THREE.Mesh(new THREE.SphereGeometry(r, 8, 6), gardenLeafMat);
+    leaf.scale.y = 0.75;
+    leaf.position.set(sx, h * 0.55 + i * 0.38, sz);
+    collectStatic(leaf);
+  }
+  wallColliders.push({ minX: sx - 0.4, maxX: sx + 0.4, minZ: sz - 0.4, maxZ: sz + 0.4 });
+}
+
+// 每房园林小品布置（跳过出生房）
+function buildGardenRoom(x, z) {
+  const cx = roomCenterX(x), cz = roomCenterZ(z);
+  const roll = Math.random();
+  if (roll < 0.08) {
+    buildGardenPavilion(cx + (Math.random() - 0.5) * 1.8, cz + (Math.random() - 0.5) * 1.8, Math.random() * Math.PI);
+  } else if (roll < 0.28) {
+    buildGardenRockery(cx + (Math.random() - 0.5) * 2.2, cz + (Math.random() - 0.5) * 2.2);
+  } else if (roll < 0.48) {
+    buildGardenPond(cx + (Math.random() - 0.5) * 2.0, cz + (Math.random() - 0.5) * 2.0);
+  } else if (roll < 0.80) {
+    buildGardenBamboo(cx + (Math.random() - 0.5) * 2.0, cz + (Math.random() - 0.5) * 2.0);
+  } else {
+    buildGardenTree(cx + (Math.random() - 0.5) * 2.4, cz + (Math.random() - 0.5) * 2.4);
+  }
+  // 每房 1-2 盏红灯笼
+  buildGardenLantern(cx - 2.6, cz - 2.6);
+  if (Math.random() < 0.6) buildGardenLantern(cx + 2.6, cz + 2.6);
+}
+
+// 园林天空：夜晚蓝调 + 月亮 + 星点
+function buildGardenSky() {
+  const mapW = CFG.gridW * CFG.roomSize;
+  const mapH = CFG.gridH * CFG.roomSize;
+  // 天空穹顶（雾关闭，避免被场景雾吞掉）
+  const sky = new THREE.Mesh(
+    new THREE.SphereGeometry(65, 20, 10),
+    new THREE.MeshBasicMaterial({ color: '#16222c', side: THREE.BackSide, fog: false })
+  );
+  sky.position.set(mapW / 2, 8, mapH / 2);
+  sky.userData.ownedMaterials = [sky.material];
+  worldGroup.add(sky);
+  // 月亮
+  const moonMat = new THREE.MeshBasicMaterial({ color: '#f0e8d0', side: THREE.DoubleSide, fog: false, transparent: true, opacity: 0.95 });
+  const moon = new THREE.Mesh(new THREE.CircleGeometry(3.2, 32), moonMat);
+  moon.position.set(mapW * 0.7, 22, mapH * 0.75);
+  moon.lookAt(mapW / 2, 0, mapH / 2);
+  moon.userData.ownedMaterials = [moonMat];
+  worldGroup.add(moon);
+  // 星点
+  const starsGeo = new THREE.BufferGeometry();
+  const starsPos = new Float32Array(220 * 3);
+  for (let i = 0; i < 220; i++) {
+    starsPos[i * 3] = Math.random() * mapW;
+    starsPos[i * 3 + 1] = 14 + Math.random() * 22;
+    starsPos[i * 3 + 2] = Math.random() * mapH;
+  }
+  starsGeo.setAttribute('position', new THREE.BufferAttribute(starsPos, 3));
+  const starsMat = new THREE.PointsMaterial({ color: '#d8e2e8', size: 0.35, transparent: true, opacity: 0.75, fog: false, depthWrite: false });
+  const stars = new THREE.Points(starsGeo, starsMat);
+  stars.position.set(0, 0, 0);
+  scene.add(stars);
+}
+
+// 构建结束时把各材质桶合并为单个 mesh（同材质只发一次 draw call）
+function isFiniteGeometry(g) {
+  const pos = g.attributes.position;
+  if (!pos) return true;
+  const arr = pos.array;
+  for (let i = 0; i < arr.length; i++) {
+    if (!Number.isFinite(arr[i])) return false;
+  }
+  return true;
+}
+
+function flushMerged() {
+  for (const [mat, geos] of mergeBuckets) {
+    if (!geos.length) continue;
+    // 过滤含 NaN 的损坏几何体，避免渲染层 computeBoundingSphere 报错
+    const validGeos = geos.filter(isFiniteGeometry);
+    if (validGeos.length !== geos.length) console.warn('⚠️ 已跳过含 NaN 的几何体', mat.type || mat);
+    // 按是否有 index 分组，避免 mergeGeometries 因属性不一致失败
+    const indexed = [], nonIndexed = [];
+    for (const g of validGeos) (g.index ? indexed : nonIndexed).push(g);
+    for (const group of [indexed, nonIndexed]) {
+      if (!group.length) continue;
+      const merged = mergeGeometries(group);
+      if (merged) {
+        group.forEach(g => g.dispose());
+        worldGroup.add(new THREE.Mesh(merged, mat));
+      } else {
+        // 兜底：逐 mesh 加入，避免物体消失
+        group.forEach(g => worldGroup.add(new THREE.Mesh(g, mat)));
+      }
+    }
+  }
+  mergeBuckets.clear();
+}
+
+// 启动加载 — 全部模型就绪后再构建关卡（加载失败 → createModelInstance 返回 null → 程序化回退）
+const MODELS_READY = Promise.all(['pillar', 'light_panel', 'exit_door', 'door_industrial', 'almond_water', 'pavilion'].map(preloadModel));
+MODELS_READY.then(() => console.log('✅ 全部模型就绪'));
 
 const worldGroup = new THREE.Group();
 scene.add(worldGroup);
 
-// 碰撞体存储
-const wallColliders = [];
-// 灯管闪烁数据（在房间循环中填充）
-const flickerLights = [];
+// 碰撞体存储（模块级）
+let wallColliders = [];
+let flickerLights = [];
+let exitDoors = [];
+let dustParticles;
+let colliderGrid = [];
+let DUST_COUNT = 150;
+let mapW, mapH;
+let dustData = [];
+let mistParticles = null;
+let mistData = [];
+let MIST_COUNT = 0;
 
 function addWallCollider(cx, cz, hw, hd) {
   wallColliders.push({ minX: cx - hw, maxX: cx + hw, minZ: cz - hd, maxZ: cz + hd });
 }
+function roomCenterX(gx) { return (gx + 0.5) * CFG.roomSize; }
+function roomCenterZ(gz) { return (gz + 0.5) * CFG.roomSize; }
 
-// 房间地面 & 天花板
-function roomCenterX(gx) { return (gx + 0.5) * ROOM_SIZE; }
-function roomCenterZ(gz) { return (gz + 0.5) * ROOM_SIZE; }
+// 门洞合并判定 — 模块级统一（墙循环与出口门候选共用，概率按关卡的 mergeChance）
+function mergedHash(x, z) {
+  let hv = (x * 374761393 + z * 668265263) | 0;
+  hv = ((hv ^ (hv >> 13)) * 1274126177) | 0;
+  hv = hv ^ (hv >> 16);
+  return Math.abs(hv) % 10;
+}
+function isMergedDoor(x, z) {
+  return mergedHash(x, z) < Math.round((CFG.mergeChance ?? 0.2) * 10);
+}
 
-// 预创建共享几何体，避免循环内重复 new
+function buildCurrentLevel() {
+  // 重置状态数组
+  wallColliders.length = 0;
+  flickerLights.length = 0;
+  exitDoors.length = 0;
+  colliderGrid.length = 0;
+
+  // 出生房间按当前关卡网格重算（L1 网格更大，避免出生房被道具/柱子堵住）
+  SPAWN_GX = Math.floor(CFG.gridW / 2);
+  SPAWN_GZ = Math.floor(CFG.gridH / 2);
+
+  // 按关卡重建材质池（先释放上一关的墙材质与贴图，防泄漏）
+  WALL_MAT_POOL.forEach(m => { if (m.map) m.map.dispose(); m.dispose(); });
+  WALL_MAT_POOL.length = 0;
+  if (CFG.theme === 'warehouse') {
+    // 仓库墙面：波纹金属墙板 + 混凝土墙板（PBR 标准材质，吃环境反射）
+    const corrTex = buildL2CorrugatedTexture();
+    for (let i = 0; i < 3; i++) {
+      const mat = new THREE.MeshStandardMaterial({
+        color: new THREE.Color(CFG.wallColor).offsetHSL(0, 0, (Math.random() - 0.5) * 0.05),
+        roughness: 0.45 + Math.random() * 0.12,
+        metalness: 0.55 + Math.random() * 0.2,
+        map: corrTex
+      });
+      WALL_MAT_POOL.push(mat);
+    }
+    // 混凝土墙板（增加变化）
+    for (let i = 0; i < 2; i++) {
+      const c = document.createElement('canvas');
+      c.width = 512; c.height = 512;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#7e8083';
+      ctx.fillRect(0, 0, 512, 512);
+      const img = ctx.getImageData(0, 0, 512, 512);
+      for (let j = 0; j < img.data.length; j += 4) {
+        const n = (Math.random() - 0.5) * 18;
+        img.data[j] += n; img.data[j+1] += n; img.data[j+2] += n;
+      }
+      ctx.putImageData(img, 0, 0);
+      ctx.strokeStyle = 'rgba(0,0,0,0.16)'; ctx.lineWidth = 2;
+      for (let ly = 128; ly < 512; ly += 128) {
+        ctx.beginPath(); ctx.moveTo(0, ly); ctx.lineTo(512, ly); ctx.stroke();
+      }
+      ctx.fillStyle = 'rgba(0,0,0,0.14)';
+      for (let ty = 96; ty < 512; ty += 128) {
+        for (let tx = 64; tx < 512; tx += 128) ctx.fillRect(tx, ty, 8, 8);
+      }
+      const tex = new THREE.CanvasTexture(c);
+      tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.RepeatWrapping;
+      tex.magFilter = THREE.LinearFilter; tex.minFilter = THREE.LinearFilter;
+      const mat = new THREE.MeshStandardMaterial({
+        color: new THREE.Color('#8a8c8f').offsetHSL(0, 0, (Math.random() - 0.5) * 0.04),
+        roughness: 0.85 + Math.random() * 0.1,
+        metalness: 0.05,
+        map: tex
+      });
+      WALL_MAT_POOL.push(mat);
+    }
+  } else if (CFG.theme === 'garden') {
+    // 园林墙面：白粉墙，带雨痕/霉斑/砖缝
+    for (let i = 0; i < 3; i++) {
+      const tex = buildGardenWallTexture();
+      const mat = new THREE.MeshStandardMaterial({
+        color: new THREE.Color(CFG.wallColor).offsetHSL(0, 0, (Math.random() - 0.5) * 0.03),
+        roughness: 0.92,
+        metalness: 0.0,
+        map: tex
+      });
+      WALL_MAT_POOL.push(mat);
+    }
+  } else {
+    // Level 0: 墙纸纹理
+    for (let i = 0; i < 6; i++) {
+      const color = new THREE.Color(CFG.wallColor);
+      color.offsetHSL((Math.random()-0.5)*0.04, (Math.random()-0.5)*0.12, (Math.random()-0.5)*0.06);
+      const mat = new THREE.MeshPhongMaterial({ color: color, specular: '#111111', shininess: 3 });
+      try { mat.map = generateWallpaper(i); } catch(e) {}
+      WALL_MAT_POOL.push(mat);
+    }
+  }
+  floorMatBase.color.set(CFG.floorColor);
+
+  // 地板纹理 — warehouse 水泥地 / garden 青石板 / backrooms 无纹理
+  if (CFG.theme === 'warehouse') {
+    if (floorTex) floorTex.dispose();
+    floorTex = buildL2FloorTexture();
+    floorTex.repeat.set(CFG.gridW, CFG.gridH);
+    floorMatL2.map = floorTex;
+    floorMatL2.needsUpdate = true;
+  } else if (CFG.theme === 'garden') {
+    if (floorTex) floorTex.dispose();
+    floorTex = buildGardenFloorTexture();
+    floorTex.repeat.set(CFG.gridW, CFG.gridH);
+    floorMatGarden.map = floorTex;
+    floorMatGarden.needsUpdate = true;
+  } else {
+    if (floorTex) { floorTex.dispose(); floorTex = null; }
+    floorMatBase.map = null;
+    floorMatBase.color.set(CFG.floorColor);
+    floorMatBase.needsUpdate = true;
+  }
+
+  // 预创建共享几何体，避免循环内重复 new；shared 标记 → collectStatic 不释放
 const outletGeo = new THREE.BoxGeometry(0.13, 0.22, 0.03);
+outletGeo.userData.shared = true;
 const outletUseMat = new THREE.MeshPhongMaterial({ color: '#f0ede0', specular: '#333333', shininess: 20 });
 
-for (let z = 0; z < GRID_H; z++) {
-  for (let x = 0; x < GRID_W; x++) {
+for (let z = 0; z < CFG.gridH; z++) {
+  for (let x = 0; x < CFG.gridW; x++) {
     const cx = roomCenterX(x), cz = roomCenterZ(z);
 
-    // 荧光灯面板（每间房独立材质，支持单独闪烁）
-    // 嵌入式荧光灯 — 金属框 + 发光面板
-    const lightGroup = new THREE.Group();
-    // 金属外框
-    const frameGeo = new THREE.BoxGeometry(1.3, 0.04, 3.3);
-    const frameMat = new THREE.MeshPhongMaterial({ color: '#d8d6d0', specular: '#666666', shininess: 40 });
-    lightGroup.add(new THREE.Mesh(frameGeo, frameMat));
-    // 发光漫射面板
-    const diffGeo = new THREE.PlaneGeometry(1.15, 3.1);
-    const myPanelMat = panelMat.clone();
-    const diffMesh = new THREE.Mesh(diffGeo, myPanelMat);
-    diffMesh.rotation.x = -Math.PI / 2;
-    diffMesh.position.y = -0.025;
-    lightGroup.add(diffMesh);
-    // 内部分隔条
-    for (let sx = -0.3; sx <= 0.3; sx += 0.6) {
-      const barGeo = new THREE.BoxGeometry(0.03, 0.01, 3.0);
-      const bar = new THREE.Mesh(barGeo, frameMat);
-      bar.position.set(sx, -0.022, 0);
-      lightGroup.add(bar);
+    // 荧光灯面板 — 优先 GLB 模型，失败回退程序化（每间房独立材质，支持单独闪烁）
+    let lightGroup, diffMesh;
+    const panelW = CFG.panelW || 1.3, panelD = CFG.panelD || 3.3;
+    const panelDrop = CFG.panelDrop ?? (CFG.theme === 'warehouse' ? 1.7 : 0.04);
+    const glbLight = CFG.theme !== 'garden' ? createModelInstance('light_panel', panelW, 0.08, panelD) : null;
+    if (glbLight && CFG.theme !== 'garden') {
+      lightGroup = glbLight;
+      lightGroup.position.set(cx, CFG.roomH - panelDrop, cz);
+      // 找到朝下的发射面板（按名或 emissive 非黑判断），克隆材质（逐房间闪烁独立），套用本关面板色
+      lightGroup.traverse(o => {
+        const isEmissive = o.isMesh && o.material && o.material.emissive &&
+          (o.material.emissive.r > 0 || o.material.emissive.g > 0 || o.material.emissive.b > 0);
+        if (o.isMesh && (o.name === 'diffuser' || isEmissive)) {
+          o.name = 'diffuser'; // 统一命名，合并时据此保留
+          o.material = Array.isArray(o.material) ? o.material.map(m => m.clone()) : o.material.clone();
+          o.userData.ownedMaterials = Array.isArray(o.material) ? o.material : [o.material];
+          o.userData.ownedMaterials.forEach(m => {
+            m.color.set(CFG.panelColor);
+            m.emissive.set(CFG.panelEmissive);
+            m.emissiveIntensity = CFG.panelEmissiveInt;
+            m.side = THREE.DoubleSide;
+          });
+          diffMesh = o;
+        }
+      });
+      if (CFG.theme === 'warehouse') addHighBayCords(lightGroup);
+      collectGroupStatic(lightGroup, ['diffuser']); // 外壳/边框/分隔条 → 合并桶
+      worldGroup.add(lightGroup);
+    } else if (CFG.theme !== 'garden') {
+      // 程序化回退 — 工业荧光灯（金属框 + 发光面板 + 分隔条）
+      lightGroup = new THREE.Group();
+      const frameGeo = new THREE.BoxGeometry(panelW, 0.04, panelD);
+      const frameMat = new THREE.MeshPhongMaterial({ color: '#d8d6d0', specular: '#666666', shininess: 40 });
+      lightGroup.add(new THREE.Mesh(frameGeo, frameMat));
+      const diffGeo = new THREE.PlaneGeometry(panelW - 0.15, panelD - 0.2);
+      const myPanelMat = panelMat.clone();
+      myPanelMat.color.set(CFG.panelColor);
+      myPanelMat.emissive.set(CFG.panelEmissive);
+      myPanelMat.emissiveIntensity = CFG.panelEmissiveInt;
+      diffMesh = new THREE.Mesh(diffGeo, myPanelMat);
+      diffMesh.name = 'diffuser';
+      diffMesh.rotation.x = -Math.PI / 2;
+      diffMesh.position.y = -0.025;
+      lightGroup.add(diffMesh);
+      for (let sx = -0.3; sx <= 0.3; sx += 0.6) {
+        const barGeo = new THREE.BoxGeometry(0.03, 0.01, 3.0);
+        const bar = new THREE.Mesh(barGeo, frameMat);
+        bar.position.set(sx, -0.022, 0);
+        lightGroup.add(bar);
+      }
+      lightGroup.position.set(cx, CFG.roomH - panelDrop, cz);
+      if (CFG.theme === 'warehouse') addHighBayCords(lightGroup);
+      collectGroupStatic(lightGroup, ['diffuser']); // 金属框/分隔条 → 合并桶
+      worldGroup.add(lightGroup);
     }
 
-    lightGroup.position.set(cx, ROOM_HEIGHT - 0.04, cz);
-    worldGroup.add(lightGroup);
-
     // 点光源 —— 棋盘格分布
-    if (x % 3 === 0 && z % 3 === 0) {
+    if (x % CFG.lightSpacing === 0 && z % CFG.lightSpacing === 0) {
       const brightnessRoll = Math.random();
+      const cold = CFG.theme === 'warehouse'; // 仓库冷白；园林/前厅暖黄
       let lightIntensity, lightColor;
       if (brightnessRoll < 0.12) {
-        lightIntensity = 0.04; lightColor = '#fff0d0';          // 坏灯 — 12%
+        lightIntensity = 0.04; lightColor = cold ? '#c8d8d2' : '#fff0d0';          // 坏灯 — 12%
       } else if (brightnessRoll < 0.28) {
-        lightIntensity = 0.12 + Math.random() * 0.14; lightColor = '#f0f8e0'; // 老化 — 16%
+        lightIntensity = 0.12 + Math.random() * 0.14; lightColor = cold ? '#d8e8e2' : '#f0f8e0'; // 老化 — 16%
       } else if (brightnessRoll < 0.45) {
-        lightIntensity = 0.25 + Math.random() * 0.20; lightColor = '#fff2d8'; // 偏暗 — 17%
+        lightIntensity = 0.25 + Math.random() * 0.20; lightColor = cold ? '#e6f2f0' : '#fff2d8'; // 偏暗 — 17%
       } else {
-        lightIntensity = 0.38 + Math.random() * 0.28; lightColor = '#fffde8';  // 正常 — 55%
+        lightIntensity = 0.38 + Math.random() * 0.28; lightColor = cold ? '#f2faf8' : '#fffde8';  // 正常 — 55%
       }
-      const ptLight = new THREE.PointLight(lightColor, lightIntensity, 16, 1.4);
-      ptLight.position.set(cx, ROOM_HEIGHT - 0.3, cz);
+      // 按主题抬升单灯强度：仓库大开间需要更远光程，园林用暖光中等亮度
+      const decay = CFG.theme === 'backrooms' ? 1.25 : 1.0;
+      lightIntensity *= CFG.theme === 'warehouse' ? 3.2 : CFG.theme === 'garden' ? 1.8 : 1.65;
+      const ptLight = new THREE.PointLight(lightColor, lightIntensity, CFG.lightDist, decay);
+      ptLight.position.set(cx,
+        CFG.theme === 'warehouse' ? CFG.roomH - (CFG.panelDrop || 1.7) - 0.25 :
+        CFG.theme === 'garden' ? 2.6 : CFG.roomH - 0.3, cz);
       ptLight.castShadow = false;
       worldGroup.add(ptLight);
       // 闪烁系统 —— 灯光与面板联动
@@ -596,25 +1971,23 @@ for (let z = 0; z < GRID_H; z++) {
         light: ptLight,
         panel: diffMesh,
         baseIntensity: lightIntensity,
+        baseEmissive: CFG.panelEmissiveInt,   // 面板发射强度基线（L0/L1 不同）
         timer: 0.2 + Math.random() * 3.5,
         flickering: false,
         flickerFrames: 0
       });
     }
 
-    // 随机柱子 — 避开门洞区域，跳过出生房间
-    if (Math.random() < 0.12 && !(x === SPAWN_GX && z === SPAWN_GZ)) {
+    // 随机柱子 — 优先 GLB 模型，失败回退程序化；避开门洞区域，跳过出生房间（园林不放大水泥柱）
+    if (CFG.theme !== 'garden' && Math.random() < 0.12 && !(x === SPAWN_GX && z === SPAWN_GZ)) {
       // 限制在房间中心区域，避免堵门
       const margin = 1.6;
-      const px = cx + (Math.random() - 0.5) * (ROOM_SIZE - margin * 2);
-      const pz = cz + (Math.random() - 0.5) * (ROOM_SIZE - margin * 2);
-      const pillar = new THREE.Mesh(
-        new THREE.BoxGeometry(0.32, ROOM_HEIGHT, 0.32),
-        pillarMat
-      );
-      pillar.position.set(px, ROOM_HEIGHT / 2, pz);
-      worldGroup.add(pillar);
-      const pilRef = pillar;
+      const px = cx + (Math.random() - 0.5) * (CFG.roomSize - margin * 2);
+      const pz = cz + (Math.random() - 0.5) * (CFG.roomSize - margin * 2);
+      const pillar = createModelInstance('pillar', 0.32, CFG.roomH, 0.32)
+        || new THREE.Mesh(new THREE.BoxGeometry(0.32, CFG.roomH, 0.32), pillarMat);
+      pillar.position.set(px, CFG.roomH / 2, pz);
+      if (collectGroupStatic(pillar, [])) worldGroup.add(pillar); // 全部并入合并桶
       // 碰撞体匹配视觉尺寸
       wallColliders.push({
         minX: px - 0.18, maxX: px + 0.18,
@@ -623,17 +1996,20 @@ for (let z = 0; z < GRID_H; z++) {
     }
 
     // 踢脚线 —— 房间四边底部
-    const baseH = 0.12, baseD = 0.06;
+    const baseH = CFG.theme === 'warehouse' ? 0.16 : CFG.theme === 'garden' ? 0.10 : 0.12;
+    const baseD = 0.06;
+    const baseMat = CFG.theme === 'warehouse' ? hazardStripeMat :
+                    CFG.theme === 'garden' ? gardenStoneMat : trimMat;
     [
-      { bx: cx, bz: cz - ROOM_SIZE/2 + baseD/2, bw: ROOM_SIZE },
-      { bx: cx, bz: cz + ROOM_SIZE/2 - baseD/2, bw: ROOM_SIZE },
-      { bx: cx - ROOM_SIZE/2 + baseD/2, bz: cz, bw: ROOM_SIZE, rot: Math.PI/2 },
-      { bx: cx + ROOM_SIZE/2 - baseD/2, bz: cz, bw: ROOM_SIZE, rot: Math.PI/2 },
+      { bx: cx, bz: cz - CFG.roomSize/2 + baseD/2, bw: CFG.roomSize },
+      { bx: cx, bz: cz + CFG.roomSize/2 - baseD/2, bw: CFG.roomSize },
+      { bx: cx - CFG.roomSize/2 + baseD/2, bz: cz, bw: CFG.roomSize, rot: Math.PI/2 },
+      { bx: cx + CFG.roomSize/2 - baseD/2, bz: cz, bw: CFG.roomSize, rot: Math.PI/2 },
     ].forEach(b => {
-      const trim = new THREE.Mesh(new THREE.BoxGeometry(b.bw, baseH, baseD), trimMat);
+      const trim = new THREE.Mesh(new THREE.BoxGeometry(b.bw, baseH, baseD), baseMat);
       trim.position.set(b.bx, baseH / 2, b.bz);
       if (b.rot) trim.rotation.y = b.rot;
-      worldGroup.add(trim);
+      collectStatic(trim); // 踢脚线并入合并桶
     });
 
     // 半墙隔断 —— 跳过出生房间
@@ -645,11 +2021,11 @@ for (let z = 0; z < GRID_H; z++) {
       const hwGeo = new THREE.BoxGeometry(hwRot === 0 ? hwW : hwD, hwH, hwRot === 0 ? hwD : hwW);
       const hw = new THREE.Mesh(hwGeo, pickWallMaterial());
       hw.position.set(
-        cx + (Math.random() - 0.5) * (ROOM_SIZE - hwW - 0.6),
+        cx + (Math.random() - 0.5) * (CFG.roomSize - hwW - 0.6),
         hwH / 2,
-        cz + (Math.random() - 0.5) * (ROOM_SIZE - hwW - 0.6)
+        cz + (Math.random() - 0.5) * (CFG.roomSize - hwW - 0.6)
       );
-      worldGroup.add(hw);
+      collectStatic(hw); // 半墙并入合并桶
       // 碰撞体
       if (hwRot === 0) {
         addWallCollider(hw.position.x, hw.position.z, hwW / 2, hwD / 2);
@@ -658,163 +2034,343 @@ for (let z = 0; z < GRID_H; z++) {
       }
     }
 
+    // 工业道具（现实仓库，每非出生房 0-1 组）— 油桶/箱堆/托盘/水泥砖/文件柜/发电机组
+    if (CFG.theme === 'warehouse' && !(x === SPAWN_GX && z === SPAWN_GZ) && Math.random() < 0.30) {
+      const kind = Math.random();
+      const ox = cx + (Math.random() - 0.5) * (CFG.roomSize - 2.4);
+      const oz = cz + (Math.random() - 0.5) * (CFG.roomSize - 2.4);
+      let halfW = 0.4, halfD = 0.4;
+      if (kind < 0.28) {
+        // 油桶（立/横放）
+        const horiz = Math.random() < 0.4;
+        const drum = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 0.8, 14), drumMat);
+        if (horiz) drum.rotation.z = Math.PI / 2;
+        drum.position.set(ox, horiz ? 0.28 : 0.4, oz);
+        collectStatic(drum);
+        halfW = 0.32; halfD = 0.32;
+      } else if (kind < 0.48) {
+        // 木箱堆（2-3 层）
+        const stack = 2 + Math.floor(Math.random() * 2);
+        for (let s = 0; s < stack; s++) {
+          const box = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.5, 0.6), crateMat);
+          box.position.set(ox + (Math.random() - 0.5) * 0.15, 0.25 + s * 0.5, oz);
+          collectStatic(box);
+        }
+        halfW = 0.34; halfD = 0.34;
+      } else if (kind < 0.62) {
+        // 托盘
+        const pallet = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.12, 0.8), crateMat);
+        pallet.position.set(ox, 0.06, oz);
+        collectStatic(pallet);
+        halfW = 0.5; halfD = 0.4;
+      } else if (kind < 0.76) {
+        // 水泥砖堆（3-5 块错位）
+        const n = 3 + Math.floor(Math.random() * 3);
+        for (let b = 0; b < n; b++) {
+          const block = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.2, 0.2), pipeMat);
+          block.position.set(ox + (Math.random() - 0.5) * 0.5, 0.1 + b * 0.2, oz + (Math.random() - 0.5) * 0.4);
+          collectStatic(block);
+        }
+        halfW = 0.3; halfD = 0.3;
+      } else if (kind < 0.88) {
+        // 文件柜（带抽屉线）
+        const cabinet = new THREE.Mesh(new THREE.BoxGeometry(0.5, 1.3, 0.6), machineryMat);
+        cabinet.position.set(ox, 0.65, oz);
+        collectStatic(cabinet);
+        for (let d = 0; d < 3; d++) {
+          const drawer = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.02, 0.56), pipeMat);
+          drawer.position.set(ox, 0.35 + d * 0.42, oz);
+          collectStatic(drawer);
+        }
+        halfW = 0.3; halfD = 0.35;
+      } else {
+        // 发电机/通风机组（百叶 + 管 stub）
+        const body = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.8, 0.6), machineryMat);
+        body.position.set(ox, 0.4, oz);
+        collectStatic(body);
+        for (let l = 0; l < 4; l++) {
+          const louver = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.06, 0.5), pipeMat);
+          louver.position.set(ox - 0.46, 0.28 + l * 0.14, oz);
+          collectStatic(louver);
+        }
+        const stub = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.5, 8), pipeMat);
+        stub.rotation.z = Math.PI / 2;
+        stub.position.set(ox + 0.2, 0.9, oz + 0.2);
+        collectStatic(stub);
+        halfW = 0.5; halfD = 0.35;
+      }
+      // 挡路道具加碰撞体（在 rebuildCollisionGrid 之前）
+      wallColliders.push({ minX: ox - halfW, maxX: ox + halfW, minZ: oz - halfD, maxZ: oz + halfD });
+    }
+
+    // 旧 L1 仓储室已撤销，保留为死分支
+    if (CFG.theme === 'habitable' && !(x === SPAWN_GX && z === SPAWN_GZ) && Math.random() < 0.10) {
+      // 2 个货架沿一侧排开 + 可选垂直第 3 个（居中偏侧，避免挡门）
+      const zLine = cz + (Math.random() < 0.5 ? -1.6 : 1.6);
+      const xStart = cx - 1.3;
+      buildStorageShelf(xStart, zLine);
+      buildStorageShelf(xStart + 2.6, zLine);
+      if (Math.random() < 0.5) {
+        buildStorageShelf(cx + (Math.random() < 0.5 ? -1.8 : 1.8), cz, Math.PI / 2);
+      }
+      // 卷帘门贴实墙内面（solidSideForRoom 保证选到实墙，不会堵门）
+      const side = solidSideForRoom(x, z);
+      if (side) buildRollerDoor(side.px, side.pz, side.alongX);
+    }
+
+    // 现实仓库：每房高位货架/托盘堆/叉车（跳过出生房，道具碰撞在 rebuildCollisionGrid 前加入）
+    if (CFG.theme === 'warehouse' && !(x === SPAWN_GX && z === SPAWN_GZ)) {
+      buildL2WarehouseRoom(x, z);
+    }
+
+    // 苏式园林：每房亭/假山/池塘/竹林/灯笼
+    if (CFG.theme === 'garden' && !(x === SPAWN_GX && z === SPAWN_GZ)) {
+      buildGardenRoom(x, z);
+    }
+
+    // 旧 L1 顶风管已撤销
+    if (CFG.theme === 'habitable' && Math.random() < 0.4) {
+      const len = 3 + Math.random() * 1.5;
+      const horiz = Math.random() < 0.5;
+      const span = CFG.roomSize / 2 - len / 2 - 0.25;
+      const duct = new THREE.Mesh(
+        new THREE.BoxGeometry(horiz ? len : 0.5, 0.3, horiz ? 0.5 : len), ductMat);
+      duct.position.set(
+        cx + (Math.random() - 0.5) * 2 * span,
+        CFG.roomH - 0.20,
+        cz + (Math.random() - 0.5) * 2 * span);
+      collectStatic(duct);
+    }
+
     // 墙面插座 —— 随机放在有实墙的墙面上（几何体和材质预创建于循环外）
     const wallsOK = [];
-    if (maze[z][x].walls.n) wallsOK.push({ fx: cx, fz: cz - ROOM_SIZE/2, rot: 0 });
-    if (maze[z][x].walls.s) wallsOK.push({ fx: cx, fz: cz + ROOM_SIZE/2, rot: 0 });
-    if (maze[z][x].walls.e) wallsOK.push({ fx: cx + ROOM_SIZE/2, fz: cz, rot: Math.PI/2 });
-    if (maze[z][x].walls.w) wallsOK.push({ fx: cx - ROOM_SIZE/2, fz: cz, rot: Math.PI/2 });
+    if (maze[z][x].walls.n) wallsOK.push({ fx: cx, fz: cz - CFG.roomSize/2, rot: 0 });
+    if (maze[z][x].walls.s) wallsOK.push({ fx: cx, fz: cz + CFG.roomSize/2, rot: 0 });
+    if (maze[z][x].walls.e) wallsOK.push({ fx: cx + CFG.roomSize/2, fz: cz, rot: Math.PI/2 });
+    if (maze[z][x].walls.w) wallsOK.push({ fx: cx - CFG.roomSize/2, fz: cz, rot: Math.PI/2 });
+    // 旧 L1 裸露钢筋已撤销
+    if (CFG.theme === 'habitable' && wallsOK.length > 0 && Math.random() < 0.55) {
+      const n = 1 + Math.floor(Math.random() * 2);
+      for (let r = 0; r < n && wallsOK.length; r++) {
+        const w = wallsOK[Math.floor(Math.random() * wallsOK.length)];
+        const rx = w.fx + (w.rot === 0 ? (Math.random() - 0.5) * (CFG.roomSize - 2) : (Math.random() - 0.5) * 0.3);
+        const rz = w.fz + (w.rot !== 0 ? (Math.random() - 0.5) * (CFG.roomSize - 2) : (Math.random() - 0.5) * 0.3);
+        const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.25, 6), rebarMat);
+        rod.position.set(rx, 1.95 + Math.random() * 1.1, rz);
+        // 南北墙（rot 0）沿 Z 伸出；东西墙（rot π/2）沿 X 伸出
+        rod.rotation.set(w.rot === 0 ? Math.PI / 2 : 0, 0, w.rot === 0 ? 0 : Math.PI / 2);
+        collectStatic(rod);
+      }
+    }
+    // 旧 L1 接线盒已撤销
+    if (CFG.theme === 'habitable' && wallsOK.length > 0 && Math.random() < 0.3) {
+      const w = wallsOK[Math.floor(Math.random() * wallsOK.length)];
+      const bx = w.fx + (w.rot === 0 ? (Math.random() - 0.5) * (CFG.roomSize - 1.6) : 0);
+      const bz = w.fz + (w.rot !== 0 ? (Math.random() - 0.5) * (CFG.roomSize - 1.6) : 0);
+      const box = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.2, 0.08), pipeMat);
+      box.position.set(bx, 1.4, bz); box.rotation.y = w.rot; collectStatic(box);
+      const stub = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.4, 6), pipeMat);
+      stub.position.set(bx, 1.6, bz); // 沿墙向上
+      collectStatic(stub);
+    }
     const outletCount = Math.random() < 0.35 ? 1 : (Math.random() < 0.2 ? 2 : 0);
     for (let o = 0; o < outletCount && wallsOK.length > 0; o++) {
       const w = wallsOK.splice(Math.floor(Math.random() * wallsOK.length), 1)[0];
-      const ox = w.fx + (w.rot === 0 ? (Math.random() - 0.5) * (ROOM_SIZE - 1.4) : 0);
-      const oz = w.fz + (w.rot !== 0 ? (Math.random() - 0.5) * (ROOM_SIZE - 1.4) : 0);
+      const ox = w.fx + (w.rot === 0 ? (Math.random() - 0.5) * (CFG.roomSize - 1.4) : 0);
+      const oz = w.fz + (w.rot !== 0 ? (Math.random() - 0.5) * (CFG.roomSize - 1.4) : 0);
       const outlet = new THREE.Mesh(outletGeo, outletUseMat);
       outlet.position.set(ox, 0.95, oz);
       outlet.rotation.y = w.rot;
-      worldGroup.add(outlet);
+      collectStatic(outlet); // 插座并入合并桶
     }
 
   }
 }
 
-// 统一大天花板 —— 消除房间之间的黑缝
-const bigCeilGeo = new THREE.PlaneGeometry(GRID_W * ROOM_SIZE, GRID_H * ROOM_SIZE);
-const bigCeil = new THREE.Mesh(bigCeilGeo, ceilMat);
-bigCeil.rotation.x = Math.PI / 2;
-bigCeil.position.set(GRID_W * ROOM_SIZE / 2, ROOM_HEIGHT - 0.02, GRID_H * ROOM_SIZE / 2);
-worldGroup.add(bigCeil);
+// 统一大天花板 —— 园林不封顶（见 buildGardenSky），其余关卡保持封闭
+if (CFG.theme !== 'garden') {
+  const bigCeilGeo = new THREE.PlaneGeometry(CFG.gridW * CFG.roomSize, CFG.gridH * CFG.roomSize);
+  const bigCeil = new THREE.Mesh(bigCeilGeo, CFG.theme === 'warehouse' ? ceilMatL2 : ceilMat);
+  bigCeil.rotation.x = Math.PI / 2;
+  bigCeil.position.set(CFG.gridW * CFG.roomSize / 2, CFG.roomH - 0.02, CFG.gridH * CFG.roomSize / 2);
+  worldGroup.add(bigCeil);
+} else {
+  buildGardenSky();
+}
 
 // 统一大地板
-const bigFloorGeo = new THREE.PlaneGeometry(GRID_W * ROOM_SIZE, GRID_H * ROOM_SIZE);
-const bigFloor = new THREE.Mesh(bigFloorGeo, floorMatBase);
+const bigFloorGeo = new THREE.PlaneGeometry(CFG.gridW * CFG.roomSize, CFG.gridH * CFG.roomSize);
+const bigFloor = new THREE.Mesh(bigFloorGeo, CFG.theme === 'warehouse' ? floorMatL2 : CFG.theme === 'garden' ? floorMatGarden : floorMatBase);
 bigFloor.rotation.x = -Math.PI / 2;
-bigFloor.position.set(GRID_W * ROOM_SIZE / 2, 0.01, GRID_H * ROOM_SIZE / 2);
+bigFloor.position.set(CFG.gridW * CFG.roomSize / 2, 0.01, CFG.gridH * CFG.roomSize / 2);
 worldGroup.add(bigFloor);
+
+// 仓库屋顶钢梁/风管结构
+if (CFG.theme === 'warehouse') buildL2Structure();
 
 // 墙壁 —— 按网格边生成，保证每段墙只建一次
 // 微重叠量消除段间黑缝
 const GAP = 0.025;
 
-// 水平墙 (沿 X 方向) —— z 从 0 到 GRID_H
-for (let z = 0; z <= GRID_H; z++) {
-  for (let x = 0; x < GRID_W; x++) {
+// 水平墙 (沿 X 方向) —— z 从 0 到 CFG.gridH
+for (let z = 0; z <= CFG.gridH; z++) {
+  for (let x = 0; x < CFG.gridW; x++) {
     const cx = roomCenterX(x);
-    const cz = z * ROOM_SIZE;
-    const fullW = ROOM_SIZE + GAP;
+    const cz = z * CFG.roomSize;
+    const fullW = CFG.roomSize + GAP;
 
     let hasWall;
     if (z === 0) hasWall = true;
-    else if (z === GRID_H) hasWall = true;
+    else if (z === CFG.gridH) hasWall = true;
     else hasWall = maze[z-1][x].walls.s;
 
     if (!hasWall) {
-            // 位运算哈希 —— 消除一切线性规律
-      let hv = (x * 374761393 + z * 668265263) | 0;
-      hv = ((hv ^ (hv >> 13)) * 1274126177) | 0;
-      hv = hv ^ (hv >> 16);
-      const merged = (Math.abs(hv) % 10) < 2;
+      const merged = isMergedDoor(x, z);
       if (!merged) {
-        const segW = (ROOM_SIZE - DOOR_WIDTH) / 2 + GAP;
+        const segW = (CFG.roomSize - CFG.doorW) / 2 + GAP;
         if (segW > 0.1) {
-          const offsetX = (ROOM_SIZE + DOOR_WIDTH) / 4;
-          const leftGeo = new THREE.BoxGeometry(segW, ROOM_HEIGHT + 0.08, WALL_THICK);
+          const offsetX = (CFG.roomSize + CFG.doorW) / 4;
+          const leftGeo = new THREE.BoxGeometry(segW, CFG.roomH + 0.08, CFG.wallThick);
           const leftWall = new THREE.Mesh(leftGeo, pickWallMaterial());
-          leftWall.position.set(cx - offsetX, ROOM_HEIGHT / 2, cz);
+          leftWall.position.set(cx - offsetX, CFG.roomH / 2, cz);
           leftWall.castShadow = true; leftWall.receiveShadow = true;
-          worldGroup.add(leftWall);
-          addWallCollider(cx - offsetX, cz, (segW - GAP) / 2, WALL_THICK / 2);
-          const rightGeo = new THREE.BoxGeometry(segW, ROOM_HEIGHT + 0.08, WALL_THICK);
+          collectStatic(leftWall); // 墙体并入合并桶
+          addWallCollider(cx - offsetX, cz, (segW - GAP) / 2, CFG.wallThick / 2);
+          const rightGeo = new THREE.BoxGeometry(segW, CFG.roomH + 0.08, CFG.wallThick);
           const rightWall = new THREE.Mesh(rightGeo, pickWallMaterial());
-          rightWall.position.set(cx + offsetX, ROOM_HEIGHT / 2, cz);
+          rightWall.position.set(cx + offsetX, CFG.roomH / 2, cz);
           rightWall.castShadow = true; rightWall.receiveShadow = true;
-          worldGroup.add(rightWall);
-          addWallCollider(cx + offsetX, cz, (segW - GAP) / 2, WALL_THICK / 2);
+          collectStatic(rightWall); // 墙体并入合并桶
+          addWallCollider(cx + offsetX, cz, (segW - GAP) / 2, CFG.wallThick / 2);
+          // 门套 + 过梁（L0/L1 门洞不再是硬缺口）
+          addDoorFrame(cx, cz, true, CFG.doorW, CFG.doorH || 2.2);
         }
       }
     } else {
-      const geo = new THREE.BoxGeometry(fullW, ROOM_HEIGHT + 0.08, WALL_THICK);
+      const geo = new THREE.BoxGeometry(fullW, CFG.roomH + 0.08, CFG.wallThick);
       const wall = new THREE.Mesh(geo, pickWallMaterial());
-      wall.position.set(cx, ROOM_HEIGHT / 2, cz);
+      wall.position.set(cx, CFG.roomH / 2, cz);
       wall.castShadow = true; wall.receiveShadow = true;
-      worldGroup.add(wall);
-      addWallCollider(cx, cz, (fullW - GAP) / 2, WALL_THICK / 2);
+      collectStatic(wall); // 墙体并入合并桶
+      addWallCollider(cx, cz, (fullW - GAP) / 2, CFG.wallThick / 2);
+      // L0 护墙板/腰线/顶角线，L1 墙顶盖板/伸缩缝
+      if (CFG.theme === 'backrooms') addL0WallMolding(cx, cz, fullW, true);
+      else if (CFG.theme === 'warehouse') addL1WallDetails(cx, cz, fullW, true);
+      else if (CFG.theme === 'garden') addGardenWallMolding(cx, cz, fullW, true);
     }
   }
 }
 
-// 垂直墙 (沿 Z 方向) —— x 从 0 到 GRID_W
-for (let x = 0; x <= GRID_W; x++) {
-  for (let z = 0; z < GRID_H; z++) {
-    const cx = x * ROOM_SIZE;
+// 垂直墙 (沿 Z 方向) —— x 从 0 到 CFG.gridW
+for (let x = 0; x <= CFG.gridW; x++) {
+  for (let z = 0; z < CFG.gridH; z++) {
+    const cx = x * CFG.roomSize;
     const cz = roomCenterZ(z);
-    const fullW = ROOM_SIZE + GAP;
+    const fullW = CFG.roomSize + GAP;
 
     let hasWall;
     if (x === 0) hasWall = true;
-    else if (x === GRID_W) hasWall = true;
+    else if (x === CFG.gridW) hasWall = true;
     else hasWall = maze[z][x-1].walls.e;
 
     if (!hasWall) {
-            // 位运算哈希 —— 消除一切线性规律
-      let hv = (x * 374761393 + z * 668265263) | 0;
-      hv = ((hv ^ (hv >> 13)) * 1274126177) | 0;
-      hv = hv ^ (hv >> 16);
-      const merged = (Math.abs(hv) % 10) < 2;
+      const merged = isMergedDoor(x, z);
       if (!merged) {
-        const segW = (ROOM_SIZE - DOOR_WIDTH) / 2 + GAP;
+        const segW = (CFG.roomSize - CFG.doorW) / 2 + GAP;
         if (segW > 0.1) {
-          const offsetZ = (ROOM_SIZE + DOOR_WIDTH) / 4;
-          const leftGeo = new THREE.BoxGeometry(WALL_THICK, ROOM_HEIGHT + 0.08, segW);
+          const offsetZ = (CFG.roomSize + CFG.doorW) / 4;
+          const leftGeo = new THREE.BoxGeometry(CFG.wallThick, CFG.roomH + 0.08, segW);
           const leftWall = new THREE.Mesh(leftGeo, pickWallMaterial());
-          leftWall.position.set(cx, ROOM_HEIGHT / 2, cz - offsetZ);
+          leftWall.position.set(cx, CFG.roomH / 2, cz - offsetZ);
           leftWall.castShadow = true; leftWall.receiveShadow = true;
-          worldGroup.add(leftWall);
-          addWallCollider(cx, cz - offsetZ, WALL_THICK / 2, (segW - GAP) / 2);
-          const rightGeo = new THREE.BoxGeometry(WALL_THICK, ROOM_HEIGHT + 0.08, segW);
+          collectStatic(leftWall); // 墙体并入合并桶
+          addWallCollider(cx, cz - offsetZ, CFG.wallThick / 2, (segW - GAP) / 2);
+          const rightGeo = new THREE.BoxGeometry(CFG.wallThick, CFG.roomH + 0.08, segW);
           const rightWall = new THREE.Mesh(rightGeo, pickWallMaterial());
-          rightWall.position.set(cx, ROOM_HEIGHT / 2, cz + offsetZ);
+          rightWall.position.set(cx, CFG.roomH / 2, cz + offsetZ);
           rightWall.castShadow = true; rightWall.receiveShadow = true;
-          worldGroup.add(rightWall);
-          addWallCollider(cx, cz + offsetZ, WALL_THICK / 2, (segW - GAP) / 2);
+          collectStatic(rightWall); // 墙体并入合并桶
+          addWallCollider(cx, cz + offsetZ, CFG.wallThick / 2, (segW - GAP) / 2);
+          // 门套 + 过梁（L0/L1 门洞不再是硬缺口）
+          addDoorFrame(cx, cz, false, CFG.doorW, CFG.doorH || 2.2);
         }
       }
     } else {
-      const geo = new THREE.BoxGeometry(WALL_THICK, ROOM_HEIGHT + 0.08, fullW);
+      const geo = new THREE.BoxGeometry(CFG.wallThick, CFG.roomH + 0.08, fullW);
       const wall = new THREE.Mesh(geo, pickWallMaterial());
-      wall.position.set(cx, ROOM_HEIGHT / 2, cz);
+      wall.position.set(cx, CFG.roomH / 2, cz);
       wall.castShadow = true; wall.receiveShadow = true;
-      worldGroup.add(wall);
-      addWallCollider(cx, cz, WALL_THICK / 2, (fullW - GAP) / 2);
+      collectStatic(wall); // 墙体并入合并桶
+      addWallCollider(cx, cz, CFG.wallThick / 2, (fullW - GAP) / 2);
+      // L0 护墙板/腰线/顶角线，L1 墙顶盖板/伸缩缝
+      if (CFG.theme === 'backrooms') addL0WallMolding(cx, cz, fullW, false);
+      else if (CFG.theme === 'warehouse') addL1WallDetails(cx, cz, fullW, false);
+      else if (CFG.theme === 'garden') addGardenWallMolding(cx, cz, fullW, false);
     }
   }
 }
 
+// 旧 L1 顶部管道已撤销
+if (CFG.theme === 'habitable') buildL1Pipes();
+
+// 仓库：外圈升降门（月台门）
+if (CFG.theme === 'warehouse') buildL2DockDoors();
+
+// ==================== 旧 L1 专属（已撤销，保留为死分支） ====================
+if (CFG.theme === 'habitable') {
+  // 水坑 — 地面暗色湿面（Standard 材质吃环境反射出反光；puddleMat 为模块级，随合并桶复用）
+  for (let i = 0; i < 34; i++) {
+    const px = Math.random() * CFG.gridW * CFG.roomSize;
+    const pz = Math.random() * CFG.gridH * CFG.roomSize;
+    const puddle = new THREE.Mesh(
+      new THREE.CircleGeometry(0.6 + Math.random() * 1.8, 18), puddleMat);
+    puddle.rotation.x = -Math.PI / 2;
+    puddle.position.set(px, 0.016, pz);
+    collectStatic(puddle); // 并入合并桶（透明合并安全，34→1 draw call）
+  }
+  // （工业道具油桶/箱/机器等由每房循环生成，见上方 prop 块）
+
+  // 墙面涂鸦 — 暗色标记（graffitiMat 为模块级）
+  for (let i = 0; i < 30; i++) {
+    const gx = 0.8 + Math.random() * (CFG.gridW * CFG.roomSize - 1.6);
+    const gz = 0.8 + Math.random() * (CFG.gridH * CFG.roomSize - 1.6);
+    const isH = Math.random() < 0.5;
+    const g = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.3 + Math.random() * 0.8, 0.3 + Math.random() * 0.6), graffitiMat);
+    g.position.set(gx, 0.6 + Math.random() * 2, gz);
+    g.rotation.y = Math.random() * Math.PI;
+    worldGroup.add(g);
+  }
+
+  console.log('🏭 Level 1 仓库特征: 34水坑 30涂鸦 冷光吊灯+密管+低垂浓雾+风管+道具+货架+卷帘门');
+}
+
 // ==================== 出口门 ====================
-const exitDoors = [];
 try {
 const doorFrameMat = new THREE.MeshPhongMaterial({ color: '#3a2a18', specular: '#111111', shininess: 15 });
 const doorPanelMat = new THREE.MeshPhongMaterial({ color: '#cc2222', emissive: '#440000', emissiveIntensity: 0.4, specular: '#222222', shininess: 10 });
 
 // 随机选择 4 面实墙放置出口门
-const doorCandidates = [];
-for (let z = 0; z < GRID_H; z++) {
-  for (let x = 0; x < GRID_W; x++) {
+
+  // 排除合并房间的墙面（isMergedDoor 为模块级函数，见 roomCenterZ 附近）
+  const doorCandidates = [];
+for (let z = 0; z < CFG.gridH; z++) {
+  for (let x = 0; x < CFG.gridW; x++) {
     // 北墙
-    if (z > 0 && maze[z][x].walls.n) {
-      doorCandidates.push({ cx: roomCenterX(x), cz: z * ROOM_SIZE, nz: -1, nx: 0 });
+    if (z > 0 && maze[z][x].walls.n && !isMergedDoor(x, z)) {
+      doorCandidates.push({ cx: roomCenterX(x), cz: z * CFG.roomSize, nz: -1, nx: 0 });
     }
     // 南墙
-    if (z < GRID_H - 1 && maze[z][x].walls.s) {
-      doorCandidates.push({ cx: roomCenterX(x), cz: (z + 1) * ROOM_SIZE, nz: 1, nx: 0 });
+    if (z < CFG.gridH - 1 && maze[z][x].walls.s && !isMergedDoor(x, z)) {
+      doorCandidates.push({ cx: roomCenterX(x), cz: (z + 1) * CFG.roomSize, nz: 1, nx: 0 });
     }
     // 西墙
-    if (x > 0 && maze[z][x].walls.w) {
-      doorCandidates.push({ cx: x * ROOM_SIZE, cz: roomCenterZ(z), nz: 0, nx: -1 });
+    if (x > 0 && maze[z][x].walls.w && !isMergedDoor(x, z)) {
+      doorCandidates.push({ cx: x * CFG.roomSize, cz: roomCenterZ(z), nz: 0, nx: -1 });
     }
     // 东墙
-    if (x < GRID_W - 1 && maze[z][x].walls.e) {
-      doorCandidates.push({ cx: (x + 1) * ROOM_SIZE, cz: roomCenterZ(z), nz: 0, nx: 1 });
+    if (x < CFG.gridW - 1 && maze[z][x].walls.e && !isMergedDoor(x, z)) {
+      doorCandidates.push({ cx: (x + 1) * CFG.roomSize, cz: roomCenterZ(z), nz: 0, nx: 1 });
     }
   }
 }
@@ -823,134 +2379,135 @@ for (let i = doorCandidates.length - 1; i > 0; i--) {
   const j = Math.floor(Math.random() * (i + 1));
   [doorCandidates[i], doorCandidates[j]] = [doorCandidates[j], doorCandidates[i]];
 }
-const selectedDoors = doorCandidates.slice(0, 1);
+// 选 3 个门，去重（不同墙面位置）
+const selectedDoors = [];
+const usedSlots = new Set();
+for (const d of doorCandidates) {
+  const key = d.cx.toFixed(1) + ',' + d.cz.toFixed(1);
+  if (!usedSlots.has(key)) {
+    usedSlots.add(key);
+    selectedDoors.push(d);
+  }
+  if (selectedDoors.length >= 3) break;
+}
 
-for (const d of selectedDoors) {
-  const isH = d.nz !== 0;
-  // 门尺寸 — 几乎占满整面墙
-  const DW = 3.5, DH = ROOM_HEIGHT - 0.2, DD = 0.2, FT = 0.12;
-  const group = new THREE.Group();
-  // 门板 — 红色主体
+// 程序化出口门回退（GLB 加载失败时）
+function buildProceduralDoor(d, isH, panelMat = doorPanelMat, frameMat = doorFrameMat) {
+  const DW = 1.75, DH = 1.4, DD = 0.2, FT = 0.12;
+  const g = new THREE.Group();
   const panelW = isH ? DW - FT*2 : DD;
   const panelD = isH ? DD : DW - FT*2;
   const panelH = DH - FT*2;
-  const panelMesh = new THREE.Mesh(new THREE.BoxGeometry(panelW, panelH, panelD), doorPanelMat);
+  const panelMesh = new THREE.Mesh(new THREE.BoxGeometry(panelW, panelH, panelD), panelMat);
   panelMesh.position.set(0, DH/2, 0);
-  group.add(panelMesh);
-  // 上门框
+  g.add(panelMesh);
   const topMesh = new THREE.Mesh(
-    new THREE.BoxGeometry(isH ? DW : FT*2, FT, isH ? FT*2 : DW), doorFrameMat);
+    new THREE.BoxGeometry(isH ? DW : FT*2, FT, isH ? FT*2 : DW), frameMat);
   topMesh.position.set(0, DH + FT/2, 0);
-  group.add(topMesh);
-  // 左门框
+  g.add(topMesh);
   const sideW = isH ? FT : FT*2;
   const sideD = isH ? FT : FT*2;
-  const leftMesh = new THREE.Mesh(new THREE.BoxGeometry(sideW, DH, sideD), doorFrameMat);
+  const leftMesh = new THREE.Mesh(new THREE.BoxGeometry(sideW, DH, sideD), frameMat);
   leftMesh.position.set(isH ? -DW/2 + FT/2 : 0, DH/2, isH ? 0 : -DW/2 + FT/2);
-  group.add(leftMesh);
-  // 右门框
-  const rightMesh = new THREE.Mesh(new THREE.BoxGeometry(sideW, DH, sideD), doorFrameMat);
+  g.add(leftMesh);
+  const rightMesh = new THREE.Mesh(new THREE.BoxGeometry(sideW, DH, sideD), frameMat);
   rightMesh.position.set(isH ? DW/2 - FT/2 : 0, DH/2, isH ? 0 : DW/2 - FT/2);
-  group.add(rightMesh);
-  // 把手
+  g.add(rightMesh);
   const knob = new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 8),
     new THREE.MeshPhongMaterial({ color: '#ffd700', specular: '#ffffff', shininess: 80 }));
   knob.position.set(isH ? DW/2 - 0.3 : (d.nx > 0 ? DD/2 + 0.05 : -DD/2 - 0.05),
     DH * 0.5, isH ? (d.nz > 0 ? DD/2 + 0.05 : -DD/2 - 0.05) : DW/2 - 0.3);
-  group.add(knob);
+  g.add(knob);
+  return g;
+}
 
-  group.position.set(d.cx, 0, d.cz);
-  if (isH) group.position.z += d.nz * (WALL_THICK/2 + 0.1);
-  else group.position.x += d.nx * (WALL_THICK/2 + 0.1);
-  worldGroup.add(group);
-  const dr = group;
-  onModelReady('exit_door', () => { replaceWithModel('exit_door', dr, 3.5, 2.8, 0.2); });
+// 出口门上方安装 EXIT 指示牌 + 红色信标灯（让玩家在浓雾中也能发现出口方向）
+function buildExitSignTexture() {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 96;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = 'rgba(0,0,0,0.88)';
+  ctx.fillRect(0, 0, 256, 96);
+  ctx.strokeStyle = '#ff4433';
+  ctx.lineWidth = 5;
+  ctx.strokeRect(4, 4, 248, 88);
+  ctx.fillStyle = '#ff5544';
+  ctx.font = 'bold 54px "Courier New", monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.shadowColor = '#ff2200';
+  ctx.shadowBlur = 18;
+  ctx.fillText('EXIT', 128, 46);
+  ctx.shadowBlur = 0;
+  ctx.font = 'bold 22px "Courier New", monospace';
+  ctx.fillStyle = '#ffd9cc';
+  ctx.fillText('出口', 128, 80);
+  const tex = new THREE.CanvasTexture(c);
+  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  return tex;
+}
 
+for (const d of selectedDoors) {
+  const isH = d.nz !== 0;
+  // 出口门 — 优先 GLB 模型（宽沿 X、深沿 Z，竖墙绕 Y 转 90°），失败回退程序化
+  const isSteel = CFG.theme === 'warehouse'; // 仓库用工业钢门，园林/前厅用红木门
+  const group = createModelInstance(isSteel ? 'door_industrial' : 'exit_door', 2.0, 2.4, 0.2, isH ? 0 : Math.PI / 2)
+    || buildProceduralDoor(d, isH, isSteel ? steelDoorPanelMat : doorPanelMat, isSteel ? steelDoorFrameMat : doorFrameMat);
+  const doorOff = CFG.wallThick / 2 + 0.25;
+  const doorX = d.cx + d.nx * doorOff;
+  const doorZ = d.cz + d.nz * doorOff;
+  group.position.set(doorX, 0, doorZ);
+  if (collectGroupStatic(group, [])) worldGroup.add(group); // 门板/门框/把手并入合并桶
   // 存储触发位置
   exitDoors.push({
-    cx: d.cx + d.nx * 0.7,
-    cz: d.cz + d.nz * 0.7,
+    cx: d.cx + d.nx * 0.6,
+    cz: d.cz + d.nz * 0.6,
     nz: d.nz,
     nx: d.nx
   });
+
+  // EXIT 指示牌：挂在门上方墙面上，朝向玩家可触发的一侧
+  const signTex = buildExitSignTexture();
+  const signMat = new THREE.MeshBasicMaterial({ map: signTex, transparent: true, side: THREE.DoubleSide });
+  const sign = new THREE.Mesh(new THREE.PlaneGeometry(0.95, 0.36), signMat);
+  const signY = Math.min(CFG.roomH - 0.35, CFG.theme === 'warehouse' ? 2.85 : 2.62);
+  sign.position.set(doorX + d.nx * 0.03, signY, doorZ + d.nz * 0.03);
+  if (isH) {
+    sign.rotation.y = d.nz > 0 ? 0 : Math.PI;
+  } else {
+    sign.rotation.y = d.nx > 0 ? Math.PI / 2 : -Math.PI / 2;
+  }
+  sign.userData.ownedMaterials = [signMat];
+  sign.userData.ownedMaps = [signTex];
+  worldGroup.add(sign);
+
+  // 红色信标灯：雾中微弱红光，帮助玩家判断出口方向
+  const beacon = new THREE.PointLight('#ff4433', 0.9, 7, 2);
+  beacon.position.set(doorX + d.nx * 0.5, signY - 0.15, doorZ + d.nz * 0.5);
+  worldGroup.add(beacon);
 }
 console.log('🚪 ' + exitDoors.length + ' 个出口门已放置');
 } catch(e) {
   console.warn('门生成失败，继续运行:', e.message);
 }
 
-// ==================== 几何体合并优化 ====================
-function mergeSceneMeshes() {
-  // 合并所有墙壁
-  const wallBatches = new Map();
-  const toRemove = [];
-  worldGroup.children.forEach(child => {
-    if (child.isMesh && child.geometry.type === 'BoxGeometry' &&
-        child.material.color && child.material.map) {
-      // 墙壁材质（有纹理=墙纸）
-      const mat = child.material;
-      if (!wallBatches.has(mat)) wallBatches.set(mat, []);
-      const clonedGeo = child.geometry.clone();
-      clonedGeo.applyMatrix4(child.matrixWorld);
-      wallBatches.get(mat).push(clonedGeo);
-      toRemove.push(child);
-    }
-  });
-  for (const [mat, geos] of wallBatches) {
-    if (geos.length > 1) {
-      const merged = mergeGeometries(geos, false);
-      const mesh = new THREE.Mesh(merged, mat);
-      mesh.castShadow = true; mesh.receiveShadow = true;
-      worldGroup.add(mesh);
-    } else if (geos.length === 1) {
-      // 单个的留着不动
-      toRemove.splice(toRemove.indexOf(toRemove.find(c => c.material === mat)), 1);
-    }
-  }
-  toRemove.forEach(c => { if (c.parent) worldGroup.remove(c); });
-  console.log('🔧 墙壁合并: ' + toRemove.length + ' → ' + wallBatches.size + ' mesh');
 
-  // 合并荧光灯框
-  const frameBatches = new Map();
-  const frameToRemove = [];
-  worldGroup.children.forEach(child => {
-    if (child.isMesh && child.material.color &&
-        child.material.color.getHex() === 0xd8d6d0) {
-      const mat = child.material;
-      if (!frameBatches.has(mat)) frameBatches.set(mat, []);
-      const cg = child.geometry.clone();
-      cg.applyMatrix4(child.matrixWorld);
-      frameBatches.get(mat).push(cg);
-      frameToRemove.push(child);
-    }
-  });
-  if (frameBatches.size > 0) {
-    for (const [mat, geos] of frameBatches) {
-      const merged = mergeGeometries(geos, false);
-      worldGroup.add(new THREE.Mesh(merged, mat));
-    }
-    frameToRemove.forEach(c => { if (c.parent) worldGroup.remove(c); });
-    console.log('🔧 灯框合并: ' + frameToRemove.length + ' → ' + frameBatches.size + ' mesh');
-  }
-}
-
-// 延迟合并（等场景构建完）
-setTimeout(mergeSceneMeshes, 100);
-
-// ==================== 灯光环境 ====================
-scene.add(new THREE.AmbientLight('#fff5e0', 0.18));
-scene.add(new THREE.HemisphereLight('#ffe8cc', '#a09070', 0.12));
+// ==================== 灯光环境 — 先移除旧环境光，避免每关叠加一份 ====================
+scene.children.filter(c => c.isAmbientLight || c.isHemisphereLight).forEach(c => scene.remove(c));
+scene.add(new THREE.AmbientLight(CFG.ambientColor, CFG.ambientInt));
+scene.add(new THREE.HemisphereLight(CFG.hemiSky, CFG.hemiGround, CFG.hemiInt));
 
 // ==================== 浮尘粒子 ====================
-const DUST_COUNT = 150;
-const mapW = GRID_W * ROOM_SIZE;
-const mapH = GRID_H * ROOM_SIZE;
+DUST_COUNT = 150;
+mapW = CFG.gridW * CFG.roomSize;
+mapH = CFG.gridH * CFG.roomSize;
 const dustGeo = new THREE.BufferGeometry();
 const dustPositions = new Float32Array(DUST_COUNT * 3);
-const dustData = []; // { vx, vy, vz }
+dustData.length = 0;
 for (let i = 0; i < DUST_COUNT; i++) {
   dustPositions[i * 3]     = Math.random() * mapW;
-  dustPositions[i * 3 + 1] = 0.3 + Math.random() * (ROOM_HEIGHT - 0.5);
+  dustPositions[i * 3 + 1] = 0.3 + Math.random() * (CFG.roomH - 0.5);
   dustPositions[i * 3 + 2] = Math.random() * mapH;
   dustData.push({
     vx: (Math.random() - 0.5) * 0.015,
@@ -960,15 +2517,115 @@ for (let i = 0; i < DUST_COUNT; i++) {
 }
 dustGeo.setAttribute('position', new THREE.BufferAttribute(dustPositions, 3));
 const dustMat = new THREE.PointsMaterial({
-  color: '#e8dcc8',
-  size: 0.045,
+  color: CFG.theme === 'backrooms' ? '#e8dcc8' : CFG.theme === 'garden' ? '#d8dcc8' : '#c6ccd0',
+  size: CFG.theme === 'backrooms' ? 0.045 : 0.05,
   transparent: true,
-  opacity: 0.45,
+  opacity: CFG.theme === 'backrooms' ? 0.45 : CFG.theme === 'garden' ? 0.30 : 0.5,
   blending: THREE.AdditiveBlending,
   depthWrite: false
 });
-const dustParticles = new THREE.Points(dustGeo, dustMat);
+dustParticles = new THREE.Points(dustGeo, dustMat);
 scene.add(dustParticles);
+
+// 园林：轻微低雾，营造池塘/竹林间的朦胧感
+if (CFG.theme === 'garden') buildMist();
+
+// 碰撞网格须在全部墙体/柱子/半墙生成后重建（否则 Level 过渡后无碰撞）
+rebuildCollisionGrid();
+// 杏仁水补给点 — 每关重生若干
+createPickups();
+// 合并静态几何 — 同材质只发一次 draw call
+flushMerged();
+// 共享几何体（插座）在收集完毕后统一释放
+outletGeo.dispose();
+}
+
+// Level 1: 顶部管道 —— 沿实墙线长程铺设。偏移墙中 0.17（墙厚 0.18 占 ±0.09 + 管半径 0.055）
+// 越门洞/垂直墙即"穿墙而过"，属真实效果；每房间中心加法兰环。全部并入 pipeMat 一个合并桶。
+function buildL1Pipes() {
+  const mapW = CFG.gridW * CFG.roomSize;
+  const mapH = CFG.gridH * CFG.roomSize;
+  const y = CFG.roomH - 0.10;
+  // 水平墙线（z=0..gridH，每线 x=0..gridW-1）
+  for (let z = 0; z <= CFG.gridH; z++) {
+    let solid = 0;
+    for (let x = 0; x < CFG.gridW; x++) {
+      const hasWall = z === 0 || z === CFG.gridH || maze[z - 1][x].walls.s;
+      if (hasWall || isMergedDoor(x, z)) solid++;
+    }
+    if (solid >= 2 && Math.random() < 0.65) {
+      const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.065, mapW, 12), pipeMat);
+      pipe.rotation.z = Math.PI / 2;
+      pipe.position.set(mapW / 2, y, z * CFG.roomSize + 0.17);
+      collectStatic(pipe);
+      for (let x = 0; x < CFG.gridW; x++) {
+        const flange = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.085, 0.12, 10), pipeMat);
+        flange.rotation.z = Math.PI / 2;
+        flange.position.set(roomCenterX(x), y, z * CFG.roomSize + 0.17);
+        collectStatic(flange);
+      }
+    }
+  }
+  // 垂直墙线（x=0..gridW，每线 z=0..gridH-1）
+  for (let x = 0; x <= CFG.gridW; x++) {
+    let solid = 0;
+    for (let z = 0; z < CFG.gridH; z++) {
+      const hasWall = x === 0 || x === CFG.gridW || maze[z][x - 1].walls.e;
+      if (hasWall || isMergedDoor(x, z)) solid++;
+    }
+    if (solid >= 2 && Math.random() < 0.65) {
+      const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.065, mapH, 12), pipeMat);
+      pipe.rotation.x = Math.PI / 2;
+      pipe.position.set(x * CFG.roomSize + 0.17, y, mapH / 2);
+      collectStatic(pipe);
+      for (let z = 0; z < CFG.gridH; z++) {
+        const flange = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.085, 0.12, 10), pipeMat);
+        flange.rotation.x = Math.PI / 2;
+        flange.position.set(x * CFG.roomSize + 0.17, y, roomCenterZ(z));
+        collectStatic(flange);
+      }
+    }
+  }
+}
+
+// Level 1: 低垂浓雾粒子 —— 柔和圆形雾斑贴着地面缓慢漂移（Habitable Zone 标志性的低悬雾气）
+function buildMist() {
+  MIST_COUNT = 70;
+  const geo = new THREE.BufferGeometry();
+  const pos = new Float32Array(MIST_COUNT * 3);
+  mistData.length = 0;
+  for (let i = 0; i < MIST_COUNT; i++) {
+    pos[i * 3]     = Math.random() * mapW;
+    pos[i * 3 + 1] = 0.12 + Math.random() * 0.75;
+    pos[i * 3 + 2] = Math.random() * mapH;
+    mistData.push({
+      vx: (Math.random() - 0.5) * 0.010,
+      vz: (Math.random() - 0.5) * 0.010
+    });
+  }
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const c = document.createElement('canvas');
+  c.width = 64; c.height = 64;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(32, 32, 2, 32, 32, 32);
+  g.addColorStop(0, 'rgba(255,255,255,0.85)');
+  g.addColorStop(0.55, 'rgba(255,255,255,0.32)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 64, 64);
+  const sprite = new THREE.CanvasTexture(c);
+  const mat = new THREE.PointsMaterial({
+    color: '#bcc6ca',
+    size: 2.8,
+    map: sprite,
+    transparent: true,
+    opacity: 0.10,
+    depthWrite: false,
+    blending: THREE.NormalBlending
+  });
+  mistParticles = new THREE.Points(geo, mat);
+  scene.add(mistParticles);
+}
 
 // ==================== 背景音效（Web Audio API 生成） ====================
 let audioCtx = null;
@@ -976,20 +2633,13 @@ let audioStarted = false;
 
 function startAmbient() {
   if (audioStarted) {
-    // 已在运行，仅确保 resume
     if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
     return;
   }
   try {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    console.log('🔊 AudioContext 创建, 状态:', audioCtx.state);
+    audioCtx.resume();
 
-    // HTTPS 下必须显式 resume
-    audioCtx.resume().then(() => {
-      console.log('🔊 AudioContext 恢复成功, 状态:', audioCtx.state);
-    });
-
-    // 嗡鸣 — 200Hz + 400Hz
     const masterGain = audioCtx.createGain();
     masterGain.gain.value = 0.3;
     masterGain.connect(audioCtx.destination);
@@ -1001,7 +2651,6 @@ function startAmbient() {
       osc.connect(g); g.connect(masterGain); osc.start();
     });
 
-    // 间歇脉冲 — 响1秒、停3秒
     const pulseGain = audioCtx.createGain();
     pulseGain.gain.value = 0;
     masterGain.disconnect();
@@ -1018,7 +2667,7 @@ function startAmbient() {
     tickOn();
 
     audioStarted = true;
-    console.log('🔊 间歇音效已启动 (响1秒/停3秒)');
+    console.log('🔊 间歇音效已启动');
   } catch(e) {
     console.error('音频失败:', e.message);
   }
@@ -1028,7 +2677,10 @@ function startAmbient() {
 const controls = new PointerLockControls(camera, document.body);
 controls.pointerSpeed = 0.5;
 
-const keys = { w: false, a: false, s: false, d: false, space: false };
+const keys = { w: false, a: false, s: false, d: false, space: false, shift: false };
+function resetKeys() {
+  keys.w = keys.a = keys.s = keys.d = keys.space = keys.shift = false;
+}
 
 document.addEventListener('keydown', e => {
   if (!controls.isLocked) return; // 输入框打字时不触发移动
@@ -1038,16 +2690,18 @@ document.addEventListener('keydown', e => {
     case 'KeyS': case 'ArrowDown':  keys.s = true; e.preventDefault(); break;
     case 'KeyD': case 'ArrowRight': keys.d = true; e.preventDefault(); break;
     case 'Space':                   keys.space = true; e.preventDefault(); break;
+    case 'ShiftLeft': case 'ShiftRight': keys.shift = true; e.preventDefault(); break;
   }
 });
+// keyup 不检查 isLocked：ESC 解锁后也要把移动键复位，避免“卡键”
 document.addEventListener('keyup', e => {
-  if (!controls.isLocked) return;
   switch (e.code) {
     case 'KeyW': case 'ArrowUp':    keys.w = false; break;
     case 'KeyA': case 'ArrowLeft':  keys.a = false; break;
     case 'KeyS': case 'ArrowDown':  keys.s = false; break;
     case 'KeyD': case 'ArrowRight': keys.d = false; break;
     case 'Space':                   keys.space = false; break;
+    case 'ShiftLeft': case 'ShiftRight': keys.shift = false; break;
   }
 });
 
@@ -1059,56 +2713,77 @@ function circleAABB(px, pz, r, bb) {
   return (dx * dx + dz * dz) < (r * r);
 }
 
-// 碰撞体按房间网格分桶
-const colliderGrid = [];
-for (let gz = 0; gz < GRID_H; gz++) {
-  colliderGrid[gz] = [];
-  for (let gx = 0; gx < GRID_W; gx++) {
-    colliderGrid[gz][gx] = [];
-  }
-}
-// 将每个碰撞体分配到其覆盖的网格单元
-wallColliders.forEach(bb => {
-  const gxMin = Math.max(0, Math.floor(bb.minX / ROOM_SIZE));
-  const gxMax = Math.min(GRID_W - 1, Math.floor(bb.maxX / ROOM_SIZE));
-  const gzMin = Math.max(0, Math.floor(bb.minZ / ROOM_SIZE));
-  const gzMax = Math.min(GRID_H - 1, Math.floor(bb.maxZ / ROOM_SIZE));
-  for (let gz = gzMin; gz <= gzMax; gz++) {
-    for (let gx = gxMin; gx <= gxMax; gx++) {
-      colliderGrid[gz][gx].push(bb);
+// 碰撞体按房间网格分桶 — 每次重建关卡后必须重算（否则 Level 1 过渡后无碰撞）
+function rebuildCollisionGrid() {
+  for (let gz = 0; gz < CFG.gridH; gz++) {
+    colliderGrid[gz] = [];
+    for (let gx = 0; gx < CFG.gridW; gx++) {
+      colliderGrid[gz][gx] = [];
     }
   }
-});
+  // 将每个碰撞体分配到其覆盖的网格单元
+  wallColliders.forEach(bb => {
+    const gxMin = Math.max(0, Math.floor(bb.minX / CFG.roomSize));
+    const gxMax = Math.min(CFG.gridW - 1, Math.floor(bb.maxX / CFG.roomSize));
+    const gzMin = Math.max(0, Math.floor(bb.minZ / CFG.roomSize));
+    const gzMax = Math.min(CFG.gridH - 1, Math.floor(bb.maxZ / CFG.roomSize));
+    for (let gz = gzMin; gz <= gzMax; gz++) {
+      for (let gx = gxMin; gx <= gxMax; gx++) {
+        colliderGrid[gz][gx].push(bb);
+      }
+    }
+  });
+}
+
+const nearbyColliders = [];
+let colliderQueryStamp = 0;
 
 function tryMove(dx, dz) {
   const pos = controls.getObject().position;
-  const px = pos.x, pz = pos.z;
-  // 确定玩家所在网格及邻接网格
-  const gx = Math.floor(px / ROOM_SIZE);
-  const gz = Math.floor(pz / ROOM_SIZE);
-  const nearby = new Set();
-  for (let dz2 = -1; dz2 <= 1; dz2++) {
-    for (let dx2 = -1; dx2 <= 1; dx2++) {
-      const nx2 = gx + dx2, nz2 = gz + dz2;
-      if (nx2 >= 0 && nx2 < GRID_W && nz2 >= 0 && nz2 < GRID_H) {
-        colliderGrid[nz2][nx2].forEach(bb => nearby.add(bb));
+  // 子步移动：低帧率下大步长会直接穿透薄墙（0.15~0.18 厚）造成瞬移/闪回，
+  // 把单步拆成不超过碰撞半径的小步，逐段做轴分离碰撞检测。
+  const dist = Math.hypot(dx, dz);
+  const maxStep = CFG.playerRad * 0.5;
+  const steps = Math.max(1, Math.ceil(dist / maxStep));
+  const sdx = dx / steps;
+  const sdz = dz / steps;
+  for (let s = 0; s < steps; s++) {
+    const px = pos.x, pz = pos.z;
+    // 确定玩家所在网格及邻接网格
+    const gx = Math.floor(px / CFG.roomSize);
+    const gz = Math.floor(pz / CFG.roomSize);
+    nearbyColliders.length = 0;
+    colliderQueryStamp++;
+    for (let dz2 = -1; dz2 <= 1; dz2++) {
+      for (let dx2 = -1; dx2 <= 1; dx2++) {
+        const nx2 = gx + dx2, nz2 = gz + dz2;
+        if (nx2 < 0 || nx2 >= CFG.gridW || nz2 < 0 || nz2 >= CFG.gridH) continue;
+        const cell = colliderGrid[nz2] && colliderGrid[nz2][nx2];
+        if (!cell) continue;
+        for (let i = 0; i < cell.length; i++) {
+          const bb = cell[i];
+          if (bb._qstamp !== colliderQueryStamp) {
+            bb._qstamp = colliderQueryStamp;
+            nearbyColliders.push(bb);
+          }
+        }
       }
     }
+    // X 轴
+    let nx = px + sdx;
+    let blockedX = false;
+    for (const bb of nearbyColliders) {
+      if (circleAABB(nx, pz, CFG.playerRad, bb)) { blockedX = true; break; }
+    }
+    if (!blockedX) pos.x = nx;
+    // Z 轴
+    let nz = pz + sdz;
+    let blockedZ = false;
+    for (const bb of nearbyColliders) {
+      if (circleAABB(pos.x, nz, CFG.playerRad, bb)) { blockedZ = true; break; }
+    }
+    if (!blockedZ) pos.z = nz;
   }
-  // X 轴
-  let nx = px + dx;
-  let blockedX = false;
-  for (const bb of nearby) {
-    if (circleAABB(nx, pz, PLAYER_RAD, bb)) { blockedX = true; break; }
-  }
-  if (!blockedX) pos.x = nx;
-  // Z 轴
-  let nz = pz + dz;
-  let blockedZ = false;
-  for (const bb of nearby) {
-    if (circleAABB(pos.x, nz, PLAYER_RAD, bb)) { blockedZ = true; break; }
-  }
-  if (!blockedZ) pos.z = nz;
 }
 
 // ==================== 灯管闪烁（高频率 — 面板联动） ====================
@@ -1120,7 +2795,7 @@ function updateFlickering(dt) {
       fl.flickering = true;
       fl.flickerFrames = 3 + Math.floor(Math.random() * 10);
       fl.light.intensity = fl.baseIntensity * (0.02 + Math.random() * 0.12);
-      if (fl.panel) fl.panel.material.emissiveIntensity = 0.03;
+      if (fl.panel) fl.panel.material.emissiveIntensity = fl.baseEmissive * 0.05;
     }
     // 闪烁中
     if (fl.flickering) {
@@ -1129,13 +2804,13 @@ function updateFlickering(dt) {
         // 结束闪烁
         fl.flickering = false;
         fl.light.intensity = fl.baseIntensity;
-        if (fl.panel) fl.panel.material.emissiveIntensity = 0.4;
+        if (fl.panel) fl.panel.material.emissiveIntensity = fl.baseEmissive;
         fl.timer = 0.5 + Math.random() * 5;
       } else if (Math.random() < 0.5) {
         // 闪烁中随机明暗
         const flickVal = fl.baseIntensity * (0.03 + Math.random() * 0.5);
         fl.light.intensity = flickVal;
-        if (fl.panel) fl.panel.material.emissiveIntensity = Math.max(0.02, flickVal / fl.baseIntensity * 0.4);
+        if (fl.panel) fl.panel.material.emissiveIntensity = Math.max(fl.baseEmissive * 0.03, flickVal / fl.baseIntensity * fl.baseEmissive);
       }
     }
   }
@@ -1154,35 +2829,48 @@ const JUMP_VELOCITY = 4.8;
 // ==================== 动画循环 ====================
 const clock = new THREE.Clock();
 let moving = false;
+// 复用临时向量 —— 动画循环内不 new，消除每帧 GC 压力
+const _forward = new THREE.Vector3();
+const _right = new THREE.Vector3();
+const _moveDir = new THREE.Vector3();
+const _up = new THREE.Vector3(0, 1, 0);
 
 function animate() {
   requestAnimationFrame(animate);
-  // 保持 AudioContext 活跃
   if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
   const dt = Math.min(clock.getDelta(), 0.2);
+  updateAdaptiveQuality(dt);
   const pos = controls.getObject().position;
 
-  // 移动
-  const forward = new THREE.Vector3();
-  camera.getWorldDirection(forward);
-  forward.y = 0;
-  if (forward.length() > 0.001) forward.normalize();
-  const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
+  // 移动（复用临时向量）
+  camera.getWorldDirection(_forward);
+  _forward.y = 0;
+  if (_forward.lengthSq() > 0.000001) _forward.normalize();
+  _right.crossVectors(_forward, _up).normalize();
 
-  const moveDir = new THREE.Vector3();
-  if (keys.w) moveDir.add(forward);
-  if (keys.s) moveDir.sub(forward);
-  if (keys.d) moveDir.add(right);
-  if (keys.a) moveDir.sub(right);
+  _moveDir.set(0, 0, 0);
+  if (keys.w) _moveDir.add(_forward);
+  if (keys.s) _moveDir.sub(_forward);
+  if (keys.d) _moveDir.add(_right);
+  if (keys.a) _moveDir.sub(_right);
 
-  moving = moveDir.length() > 0.001;
+  moving = _moveDir.lengthSq() > 0.000001;
+  sprinting = keys.shift && moving && !gameOver && timeLeft > 0;
   if (moving) {
-    moveDir.normalize();
-    const speed = PLAYER_SPEED * dt;
-    tryMove(moveDir.x * speed, moveDir.z * speed);
-    if (playerGrounded) bobPhase += dt * BOB_SPEED;
+    _moveDir.normalize();
+    const sprintMul = sprinting ? (CFG.sprintSpeedMul || 1.6) : 1;
+    const speed = CFG.playerSpeed * sprintMul * dt;
+    tryMove(_moveDir.x * speed, _moveDir.z * speed);
+    if (playerGrounded) bobPhase += dt * BOB_SPEED * (sprinting ? 1.4 : 1);
   } else {
     if (playerGrounded) bobPhase = 0;
+  }
+
+  // 冲刺 FOV 动态拉伸（速度感）
+  const targetFov = sprinting ? 80 : 75;
+  if (Math.abs(camera.fov - targetFov) > 0.01) {
+    camera.fov += (targetFov - camera.fov) * Math.min(1, dt * 8);
+    camera.updateProjectionMatrix();
   }
 
   // 重力 & 跳跃
@@ -1190,15 +2878,15 @@ function animate() {
     playerVelocityY -= GRAVITY * dt;
     pos.y += playerVelocityY * dt;
     // 落地
-    if (pos.y <= EYE_HEIGHT) {
-      pos.y = EYE_HEIGHT;
+    if (pos.y <= CFG.eyeH) {
+      pos.y = CFG.eyeH;
       playerVelocityY = 0;
       playerGrounded = true;
       bobPhase = 0;
     }
     // 天花板碰撞
-    if (pos.y >= ROOM_HEIGHT - 0.4) {
-      pos.y = ROOM_HEIGHT - 0.4;
+    if (pos.y >= CFG.roomH - 0.4) {
+      pos.y = CFG.roomH - 0.4;
       playerVelocityY = 0;
     }
   }
@@ -1213,64 +2901,88 @@ function animate() {
 
   // 头部晃动（仅地面时）
   if (playerGrounded) {
-    pos.y = EYE_HEIGHT + (moving ? Math.sin(bobPhase) * BOB_AMP : 0);
+    pos.y = CFG.eyeH + (moving ? Math.sin(bobPhase) * BOB_AMP : 0);
   }
 
   // 闪烁更新
   updateFlickering(dt);
 
   // 浮尘漂动
-  const dpArr = dustParticles.geometry.attributes.position.array;
-  for (let i = 0; i < DUST_COUNT; i++) {
-    const d = dustData[i];
-    dpArr[i * 3]     += d.vx;
-    dpArr[i * 3 + 1] += d.vy;
-    dpArr[i * 3 + 2] += d.vz;
-    // 环绕边界
-    if (dpArr[i * 3] < 0) dpArr[i * 3] += mapW;
-    if (dpArr[i * 3] > mapW) dpArr[i * 3] -= mapW;
-    if (dpArr[i * 3 + 1] < 0.2) dpArr[i * 3 + 1] = ROOM_HEIGHT - 0.3;
-    if (dpArr[i * 3 + 1] > ROOM_HEIGHT - 0.2) dpArr[i * 3 + 1] = 0.3;
-    if (dpArr[i * 3 + 2] < 0) dpArr[i * 3 + 2] += mapH;
-    if (dpArr[i * 3 + 2] > mapH) dpArr[i * 3 + 2] -= mapH;
+  if (dustParticles) {
+    const dpArr = dustParticles.geometry.attributes.position.array;
+    for (let i = 0; i < DUST_COUNT; i++) {
+      const d = dustData[i];
+      dpArr[i * 3]     += d.vx;
+      dpArr[i * 3 + 1] += d.vy;
+      dpArr[i * 3 + 2] += d.vz;
+      // 环绕边界
+      if (dpArr[i * 3] < 0) dpArr[i * 3] += mapW;
+      if (dpArr[i * 3] > mapW) dpArr[i * 3] -= mapW;
+      if (dpArr[i * 3 + 1] < 0.2) dpArr[i * 3 + 1] = CFG.roomH - 0.3;
+      if (dpArr[i * 3 + 1] > CFG.roomH - 0.2) dpArr[i * 3 + 1] = 0.3;
+      if (dpArr[i * 3 + 2] < 0) dpArr[i * 3 + 2] += mapH;
+      if (dpArr[i * 3 + 2] > mapH) dpArr[i * 3 + 2] -= mapH;
+    }
+    dustParticles.geometry.attributes.position.needsUpdate = true;
   }
-  dustParticles.geometry.attributes.position.needsUpdate = true;
+
+  // 低垂浓雾缓慢漂移
+  if (mistParticles) {
+    const mp = mistParticles.geometry.attributes.position.array;
+    for (let i = 0; i < MIST_COUNT; i++) {
+      const m = mistData[i];
+      mp[i * 3] += m.vx;
+      mp[i * 3 + 2] += m.vz;
+      if (mp[i * 3] < 0) mp[i * 3] += mapW;
+      if (mp[i * 3] > mapW) mp[i * 3] -= mapW;
+      if (mp[i * 3 + 2] < 0) mp[i * 3 + 2] += mapH;
+      if (mp[i * 3 + 2] > mapH) mp[i * 3 + 2] -= mapH;
+    }
+    mistParticles.geometry.attributes.position.needsUpdate = true;
+  }
 
   // 体力计时 + 已用时间
   if (controls.isLocked && !gameOver) {
     elapsedTime += dt;
-    timeLeft -= dt;
+    timeLeft -= dt * (sprinting ? (CFG.sprintDrainMul || 2.0) : 1);
     updateElapsedUI();
 
     if (timeLeft <= 0) {
       timeLeft = 0;
       gameOver = true;
       deathCount++;
-      addRecord(playerName, elapsedTime, false, deathCount);
-      renderLeaderboard('dead-leaderboard', playerName, elapsedTime, false);
+      const deadRec = addRecord(playerName, elapsedTime, false, deathCount);
+      renderLeaderboard('dead-leaderboard', playerName, elapsedTime, false, deadRec.ts);
+      document.getElementById("dead-stats").textContent =
+        "体力耗尽于: " + CFG.name + " | 用时: " + formatTime(elapsedTime) + " | 死亡次数: " + deathCount;
       deadOverlay.classList.add('show');
       controls.unlock();
       console.log('💀 体力耗尽... 死亡次数: ' + deathCount);
     }
     updateStaminaUI();
 
-    // 杏仁水悬浮动画
-    if (almondMesh && !almondUsed) {
-      almondMesh.position.y = 0.35 + Math.sin(elapsedTime * 2.5) * 0.08;
-      almondMesh.rotation.y += dt * 0.8;
-    }
-
-    // 杏仁水拾取
-    if (!almondUsed && almondMesh) {
-      const adx = pos.x - almondPos.x;
-      const adz = pos.z - almondPos.z;
+    // 杏仁水悬浮动画 & 拾取
+    for (let i = almondPickups.length - 1; i >= 0; i--) {
+      const item = almondPickups[i];
+      item.mesh.position.y = 0.35 + Math.sin(elapsedTime * 2.5 + i * 1.7) * 0.08;
+      item.mesh.rotation.y += dt * 0.8;
+      const adx = pos.x - item.x;
+      const adz = pos.z - item.z;
       if (adx * adx + adz * adz < 1.2 * 1.2) {
-        almondUsed = true;
-        timeLeft += 60;
+        timeLeft += (CFG.pickupBonus || 60);
         updateStaminaUI();
-        worldGroup.remove(almondMesh);
-        almondMesh = null;
-        console.log('💧 拾取杏仁水！+60 秒，剩余 ' + Math.ceil(timeLeft) + ' 秒');
+        worldGroup.remove(item.mesh);
+        // 程序化回退瓶的几何/材质为实例私有，可安全释放；GLB 克隆共享 modelStore 资源，只移除
+        item.mesh.traverse(child => {
+          if (child.isMesh && !child.userData.isModelMesh) {
+            if (child.geometry) child.geometry.dispose();
+            if (Array.isArray(child.material)) child.material.forEach(m => m.dispose());
+            else if (child.material) child.material.dispose();
+          }
+        });
+        almondPickups.splice(i, 1);
+        showToast('💧 杏仁水 +' + (CFG.pickupBonus || 60) + ' 秒');
+        console.log('💧 拾取杏仁水！剩余 ' + Math.ceil(timeLeft) + ' 秒');
       }
     }
   }
@@ -1280,28 +2992,20 @@ function animate() {
     for (const door of exitDoors) {
       const dx = pos.x - door.cx;
       const dz = pos.z - door.cz;
-      if (dx * dx + dz * dz < 1.0 && playerGrounded) {
-        const winEl = document.getElementById('win-overlay');
-        if (winEl && !winEl.classList.contains('show')) {
-          gameOver = true;
-          addRecord(playerName, elapsedTime, true, deathCount);
-          renderLeaderboard('win-leaderboard', playerName, elapsedTime, true);
-          document.getElementById('win-stats').textContent =
-            '通关时间: ' + formatTime(elapsedTime) + ' | 死亡次数: ' + deathCount;
-          winEl.classList.add('show');
-          controls.unlock();
-          console.log('🏆 逃离 Level 0！时间: ' + formatTime(elapsedTime));
-          break;
+      if (dx * dx + dz * dz < 0.8 * 0.8) {
+        if (!gameOver) {
+          transitionToLevel(currentLevel + 1);
         }
+        break;
       }
     }
   }
 
   // 围栏：防止走出地图
-  pos.x = Math.max(PLAYER_RAD, Math.min(GRID_W * ROOM_SIZE - PLAYER_RAD, pos.x));
-  pos.z = Math.max(PLAYER_RAD, Math.min(GRID_H * ROOM_SIZE - PLAYER_RAD, pos.z));
+  pos.x = Math.max(CFG.playerRad, Math.min(CFG.gridW * CFG.roomSize - CFG.playerRad, pos.x));
+  pos.z = Math.max(CFG.playerRad, Math.min(CFG.gridH * CFG.roomSize - CFG.playerRad, pos.z));
 
-  renderer.render(scene, camera);
+  if (composer) composer.render(); else renderer.render(scene, camera);
 }
 
 // ==================== 事件 ====================
@@ -1342,7 +3046,7 @@ controls.addEventListener('lock', () => {
   elapsedEl.classList.add('show');
   // 仅在死亡/通关后重新开始时重置
   if (gameOver) {
-    timeLeft = TOTAL_TIME;
+    timeLeft = CFG.stamina;
     elapsedTime = 0;
     gameOver = false;
     deathCount = 0;
@@ -1357,6 +3061,7 @@ controls.addEventListener('lock', () => {
 });
 
 controls.addEventListener('unlock', () => {
+  resetKeys();
   if (!gameOver) overlay.classList.remove('hidden');
   info.style.opacity = '1';
   console.log('🔓 指针已解锁');
@@ -1379,6 +3084,7 @@ window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  if (composer) composer.setSize(window.innerWidth, window.innerHeight);
 });
 
 // ==================== 排行榜存储（Supabase + localStorage 双模） ====================
@@ -1420,10 +3126,12 @@ function sortRecords(arr) {
   });
 }
 
-function renderTable(el, records, highlightName, highlightTime, highlightWon) {
+function renderTable(el, records, highlightName, highlightTime, highlightWon, highlightTs) {
   let html = '<h3>🏆 排行榜</h3><table><tr><th></th><th>玩家</th><th>时间</th><th>死亡</th></tr>';
   sortRecords(records).slice(0, 10).forEach((r, i) => {
-    const isMe = r.name === highlightName && r.time === (highlightWon ? highlightTime : null);
+    const isMe = highlightTs
+      ? (r.ts === highlightTs)
+      : (r.name === highlightName && r.time === (highlightWon ? highlightTime : null));
     html += '<tr class="' + (isMe ? 'me' : '') + '">';
     html += '<td class="rank">' + (i + 1) + '</td>';
     html += '<td>' + (r.name || '???') + '</td>';
@@ -1436,16 +3144,16 @@ function renderTable(el, records, highlightName, highlightTime, highlightWon) {
   el.innerHTML = html;
 }
 
-function renderLeaderboard(containerId, highlightName, highlightTime, highlightWon) {
+function renderLeaderboard(containerId, highlightName, highlightTime, highlightWon, highlightTs) {
   const el = document.getElementById(containerId);
   if (!el) return;
   // 先显示本地数据
-  renderTable(el, loadLeaderboard(), highlightName, highlightTime, highlightWon);
+  renderTable(el, loadLeaderboard(), highlightName, highlightTime, highlightWon, highlightTs);
   // 再从 Supabase 加载覆盖
   if (useCloud && supabaseClient) {
     supabaseClient.from('leaderboard').select('*').order('time', { ascending: true, nullsFirst: false }).limit(10)
       .then(({ data }) => {
-        if (data && data.length) renderTable(el, data, highlightName, highlightTime, highlightWon);
+        if (data && data.length) renderTable(el, data, highlightName, highlightTime, highlightWon, highlightTs);
       }).catch(() => {});
   }
 }
@@ -1464,16 +3172,13 @@ function addRecord(name, time, won, deaths) {
       console.warn('云端同步失败:', e.message);
     });
   }
+  return record;
 }
 
 // ==================== 体力计时 & 杏仁水 ====================
-const TOTAL_TIME = 120;
-let timeLeft = TOTAL_TIME;
-let elapsedTime = 0;
+let timeLeft = CFG.stamina;
 let gameOver = false;
-let almondUsed = false;
-let deathCount = 0;
-let playerName = '';
+let sprinting = false;
 
 const staminaBar = document.getElementById('stamina-bar');
 const staminaFill = document.getElementById('stamina-fill');
@@ -1491,11 +3196,22 @@ function formatTime(sec) {
 
 
 function updateStaminaUI() {
-  const pct = Math.min(100, Math.max(0, timeLeft / TOTAL_TIME * 100));
+  const pct = Math.min(100, Math.max(0, timeLeft / CFG.stamina * 100));
   staminaFill.style.width = pct + '%';
-  staminaFill.classList.toggle('warning', timeLeft <= 50 && timeLeft > 25);
-  staminaFill.classList.toggle('danger', timeLeft <= 25);
-  staminaLabel.textContent = '体力剩余 ' + formatTime(timeLeft).replace(/\.\d/, '');
+  staminaFill.classList.toggle('warning', pct <= 40 && pct > 20);
+  staminaFill.classList.toggle('danger', pct <= 20);
+  staminaLabel.textContent = '体力剩余 ' + formatTime(timeLeft).replace(/\.\d/, '') +
+    (sprinting ? ' ⚡冲刺中' : '');
+}
+
+let toastTimer = null;
+function showToast(msg) {
+  const toast = document.getElementById('toast');
+  if (!toast) return;
+  toast.textContent = msg;
+  toast.classList.add('show');
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove('show'), 2200);
 }
 
 function updateElapsedUI() {
@@ -1505,20 +3221,34 @@ function updateElapsedUI() {
 }
 
 
-// 杏仁水补给点 — 随机非出生房间中心
-let almondPos = null;
-let almondMesh = null;
-{
-  let ax, az;
-  do {
-    ax = Math.floor(Math.random() * GRID_W);
-    az = Math.floor(Math.random() * GRID_H);
-  } while (ax === SPAWN_GX && az === SPAWN_GZ);
-  almondPos = {
-    x: roomCenterX(ax),
-    z: roomCenterZ(az)
-  };
-  // 杏仁水 3D 模型 — LatheGeometry 一体成型瓶身
+// 杏仁水补给点状态（由 buildCurrentLevel → createPickups 创建，每关重生）
+let almondPickups = [];
+
+// 每关在随机非出生房生成若干杏仁水（GLB 优先，失败回退程序化瓶身）
+function createPickups() {
+  almondPickups.length = 0;
+  const count = CFG.pickups || 1;
+  const usedRooms = new Set();
+  usedRooms.add(SPAWN_GX + ',' + SPAWN_GZ);
+  let guard = 0;
+  while (almondPickups.length < count && guard++ < 300) {
+    const ax = Math.floor(Math.random() * CFG.gridW);
+    const az = Math.floor(Math.random() * CFG.gridH);
+    const key = ax + ',' + az;
+    if (usedRooms.has(key)) continue;
+    usedRooms.add(key);
+    const x = roomCenterX(ax), z = roomCenterZ(az);
+    const almondGroup = createModelInstance('almond_water', 0.3, 0.8, 0.3)
+      || buildProceduralAlmond();
+    almondGroup.position.set(x, 0.35, z);
+    worldGroup.add(almondGroup);
+    almondPickups.push({ mesh: almondGroup, x, z });
+    console.log('💧 杏仁水补给点已放置在房间 (' + ax + ',' + az + ')');
+  }
+}
+
+// 程序化杏仁水瓶 — LatheGeometry 一体成型瓶身（GLB 加载失败时回退）
+function buildProceduralAlmond() {
   const almondGroup = new THREE.Group();
   const glassMat = new THREE.MeshPhongMaterial({
     color: '#aaddff', emissive: '#113355', emissiveIntensity: 0.6,
@@ -1535,20 +3265,14 @@ let almondMesh = null;
 
   // 瓶身轮廓：从底部到顶部 (r, y) 点
   const profile = [];
-  // 底部
   profile.push(new THREE.Vector2(0.16, 0.0));
   profile.push(new THREE.Vector2(0.17, 0.04));
-  // 瓶身
   profile.push(new THREE.Vector2(0.17, 0.45));
-  // 瓶肩收窄
   profile.push(new THREE.Vector2(0.14, 0.50));
   profile.push(new THREE.Vector2(0.06, 0.58));
-  // 瓶颈
   profile.push(new THREE.Vector2(0.055, 0.62));
   profile.push(new THREE.Vector2(0.055, 0.68));
-  // 到顶部
   profile.push(new THREE.Vector2(0.06, 0.70));
-
   const bottleGeo = new THREE.LatheGeometry(profile, 24);
   almondGroup.add(new THREE.Mesh(bottleGeo, glassMat));
 
@@ -1582,38 +3306,39 @@ let almondMesh = null;
   glow.rotation.x = -Math.PI / 2;
   glow.position.y = 0.02;
   almondGroup.add(glow);
-
-  almondGroup.position.set(almondPos.x, 0.35, almondPos.z);
-  worldGroup.add(almondGroup);
-  almondMesh = almondGroup;
-  const am = almondGroup;
-  onModelReady('almond_water', () => {
-    const m = replaceWithModel('almond_water', am, 0.3, 0.8, 0.3);
-    if (m) almondMesh = m;
-  });
-
-  console.log('💧 杏仁水补给点已放置在房间 (' + ax + ',' + az + ')');
+  return almondGroup;
 }
 
-// ==================== 启动 ====================
-// 出生点安全检查
-{
+// ==================== 启动 — 等全部模型就绪后再构建关卡 ====================
+function spawnSafetyCheck() {
   const sp = camera.position;
   let blocked = false;
   for (const bb of wallColliders) {
     const cx = Math.max(bb.minX, Math.min(sp.x, bb.maxX));
     const cz = Math.max(bb.minZ, Math.min(sp.z, bb.maxZ));
-    if ((sp.x-cx)*(sp.x-cx) + (sp.z-cz)*(sp.z-cz) < PLAYER_RAD * PLAYER_RAD) {
+    if ((sp.x-cx)*(sp.x-cx) + (sp.z-cz)*(sp.z-cz) < CFG.playerRad * CFG.playerRad) {
       blocked = true; break;
     }
   }
   if (blocked) console.warn('⚠️ 出生点被障碍物阻挡！');
   else console.log('✅ 出生点安全');
 }
-animate();
-console.log('🏚️  Backrooms Level 0 已就绪');
-console.log('   ' + GRID_W + '×' + GRID_H + ' 迷宫 · ' + (GRID_W * ROOM_SIZE) + '×' + (GRID_H * ROOM_SIZE) + ' 单位');
-console.log('   点击屏幕锁定鼠标，WASD 移动探索');
+
+MODELS_READY.then(() => {
+  try {
+    buildCurrentLevel();
+    spawnSafetyCheck();
+  } catch(e) {
+    console.error('关卡构建失败，仍启动渲染:', e);
+  }
+  animate();
+  const startBtn = document.getElementById('start-btn');
+  startBtn.disabled = false;
+  startBtn.textContent = '开始探索';
+  console.log('🏚️  Backrooms ' + CFG.name + ' 已就绪');
+  console.log('   ' + CFG.gridW + '×' + CFG.gridH + ' 迷宫 · ' + (CFG.gridW * CFG.roomSize) + '×' + (CFG.gridH * CFG.roomSize) + ' 单位');
+  console.log('   点击屏幕锁定鼠标，WASD 移动探索');
+});
 </script>
 </body>
 </html>
