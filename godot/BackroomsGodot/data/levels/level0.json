@@ -1,0 +1,47 @@
+{
+  "id": 0,
+  "name": "Level 0",
+  "subtitle": "前厅",
+  "theme": "backrooms",
+  "gridW": 10,
+  "gridH": 10,
+  "roomSize": 5.0,
+  "roomH": 4.0,
+  "wallThick": 0.15,
+  "doorW": 2.4,
+  "doorH": 3.0,
+  "mergeChance": 0.2,
+  "extraOpen": 0.2,
+  "openSky": false,
+  "playerSpeed": 5.5,
+  "playerRad": 0.3,
+  "eyeH": 1.65,
+  "stamina": 120,
+  "pickups": [
+    {
+      "x": 12.5,
+      "z": 27.5
+    },
+    {
+      "x": 42.5,
+      "z": 12.5
+    }
+  ],
+  "pickupBonus": 45,
+  "spawn": {
+    "x": 27.5,
+    "y": 1.65,
+    "z": 27.5
+  },
+  "exits": [
+    {
+      "x": 7.5,
+      "z": 27.5,
+      "next": "level1"
+    }
+  ],
+  "lightSpacing": 4,
+  "lightDist": 20.0,
+  "lightEnergy": 1.0,
+  "lightColor": "#fff0d0"
+}

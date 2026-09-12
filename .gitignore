@@ -1,2 +1,7 @@
-blender/
+blender/__pycache__/
 _temp_check.js
+models/_tex_cache/
+.blender_tmp/
+.shots/
+/shot.html
+.godot/

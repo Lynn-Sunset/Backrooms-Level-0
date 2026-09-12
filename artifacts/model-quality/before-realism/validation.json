@@ -1,0 +1,74 @@
+[
+  {
+    "asset": "pillar",
+    "bytes": 382752,
+    "triangles": 2804,
+    "budget": 4500,
+    "vertices": 1840,
+    "meshes": 2,
+    "materials": 2,
+    "embedded_images": 4,
+    "degenerate_triangles": 0,
+    "status": "pass"
+  },
+  {
+    "asset": "light_panel",
+    "bytes": 235220,
+    "triangles": 3736,
+    "budget": 6000,
+    "vertices": 2552,
+    "meshes": 5,
+    "materials": 5,
+    "embedded_images": 2,
+    "degenerate_triangles": 0,
+    "status": "pass"
+  },
+  {
+    "asset": "exit_door",
+    "bytes": 429868,
+    "triangles": 4252,
+    "budget": 8000,
+    "vertices": 2966,
+    "meshes": 7,
+    "materials": 7,
+    "embedded_images": 4,
+    "degenerate_triangles": 0,
+    "status": "pass"
+  },
+  {
+    "asset": "door_industrial",
+    "bytes": 354500,
+    "triangles": 7296,
+    "budget": 12000,
+    "vertices": 5530,
+    "meshes": 9,
+    "materials": 9,
+    "embedded_images": 2,
+    "degenerate_triangles": 0,
+    "status": "pass"
+  },
+  {
+    "asset": "almond_water",
+    "bytes": 260792,
+    "triangles": 8544,
+    "budget": 12000,
+    "vertices": 5831,
+    "meshes": 6,
+    "materials": 6,
+    "embedded_images": 1,
+    "degenerate_triangles": 0,
+    "status": "pass"
+  },
+  {
+    "asset": "pavilion",
+    "bytes": 3164848,
+    "triangles": 71248,
+    "budget": 80000,
+    "vertices": 73191,
+    "meshes": 11,
+    "materials": 11,
+    "embedded_images": 8,
+    "degenerate_triangles": 0,
+    "status": "pass"
+  }
+]

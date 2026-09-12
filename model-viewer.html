@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Backrooms — Model archive</title>
+  <style>
+    :root{color-scheme:dark;--bg:#171b19;--line:#363e36;--muted:#929d90;--ink:#e4e6d8;--accent:#d4c089}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:Arial,sans-serif;font-size:14px}
+    button,a,input{touch-action:manipulation}button,a{color:inherit}button{font:inherit;cursor:pointer}a{text-decoration:none}
+    button:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:5px}
+    header{height:78px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 38px}
+    .brand{font-size:12px;letter-spacing:.26em}.brand span{color:var(--muted);letter-spacing:.12em;margin-left:22px}
+    .back{color:var(--accent);font-size:12px;letter-spacing:.08em}main{display:grid;grid-template-columns:285px minmax(0,1fr);min-height:calc(100vh - 78px)}
+    aside{padding:35px 25px;border-right:1px solid var(--line);display:flex;flex-direction:column}.eyebrow{font:10px 'Courier New',monospace;letter-spacing:.18em;color:var(--muted);text-transform:uppercase}
+    h1{font:normal 30px Georgia,serif;margin:14px 0 13px}.intro{color:var(--muted);font-size:12px;line-height:1.8;margin:0 0 30px}
+    nav{display:grid;gap:5px}nav button{display:flex;align-items:center;text-align:left;background:transparent;border:1px solid transparent;padding:14px 12px;color:var(--muted);gap:16px;border-radius:3px}
+    nav button span{font:10px 'Courier New',monospace;color:#7e897d}nav button:hover{background:#242b25;color:var(--ink)}nav button[aria-pressed="true"]{background:#2c332b;border-color:#626952;color:var(--ink)}nav button[aria-pressed="true"] span{color:var(--accent)}
+    .source-note{margin-top:auto;padding-top:40px;color:var(--muted);font:10px/1.8 'Courier New',monospace}
+    article{min-width:0;display:flex;flex-direction:column}.stage{position:relative;height:calc(100vh - 251px);min-height:380px;background:#202720;overflow:hidden}
+    .stage canvas{display:block;width:100%;height:100%;touch-action:none}.stage-label{position:absolute;left:30px;top:28px;pointer-events:none}.stage-label strong{display:block;font:11px 'Courier New',monospace;letter-spacing:.16em;margin-top:8px}
+    #status{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);font:12px 'Courier New',monospace;color:var(--accent)}#status:empty{display:none}
+    .stage-hint{position:absolute;bottom:23px;left:30px;color:var(--muted);font:10px 'Courier New',monospace;letter-spacing:.03em;pointer-events:none}
+    .tools{position:absolute;right:25px;bottom:19px;display:flex;gap:7px}.tools button{background:#191f1bd9;border:1px solid #50594b;border-radius:3px;font-size:11px;padding:9px 12px}.tools button[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
+    .details{display:grid;grid-template-columns:minmax(200px,1fr) auto;gap:32px;padding:24px 30px;border-top:1px solid var(--line)}h2{font:normal 23px Georgia,serif;margin:0 0 9px}.description{color:var(--muted);font-size:12px;line-height:1.7;max-width:540px;margin:0}
+    dl{display:grid;grid-template-columns:repeat(3,auto);gap:25px;margin:0;align-self:center}dt{font:9px 'Courier New',monospace;letter-spacing:.1em;color:var(--muted);text-transform:uppercase;margin-bottom:9px}dd{margin:0;font:12px 'Courier New',monospace;white-space:nowrap}.download{display:inline-block;margin-top:14px;color:var(--accent);font-size:11px}
+    @media(max-width:850px){header{padding:0 20px;height:65px}.brand span{display:none}main{display:block}aside{padding:23px 20px;border:0}.intro,.source-note{display:none}h1{font-size:24px;margin:9px 0 15px}nav{grid-template-columns:repeat(3,1fr);gap:3px}nav button{padding:10px 7px;gap:7px;font-size:11px}.stage{height:51vh;min-height:330px}.details{display:block;padding:23px 20px}dl{margin-top:22px;justify-content:start;gap:28px}.stage-label{top:20px;left:20px}.stage-hint{left:20px;bottom:66px}.tools{left:20px;right:auto}.stage-hint{font-size:9px}}
+    @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
+  </style>
+  <script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.157.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.157.0/examples/jsm/"}}</script>
+</head>
+<body>
+  <header><a href="index.html" class="brand">BACKROOMS<span>/ MODEL ARCHIVE</span></a><a href="index.html" class="back">Return to exploration ↗</a></header>
+  <main>
+    <aside>
+      <div class="eyebrow">Objects from the in-between</div><h1>Model archive</h1>
+      <p class="intro">Six familiar objects. A closer look at the details you might miss on the way out.</p>
+      <nav aria-label="Choose a model">
+        <button data-model="pavilion" aria-pressed="true"><span>01</span> Garden pavilion</button>
+        <button data-model="almond_water" aria-pressed="false"><span>02</span> Almond water</button>
+        <button data-model="exit_door" aria-pressed="false"><span>03</span> Walnut exit door</button>
+        <button data-model="door_industrial" aria-pressed="false"><span>04</span> Industrial door</button>
+        <button data-model="light_panel" aria-pressed="false"><span>05</span> Fluorescent fixture</button>
+        <button data-model="pillar" aria-pressed="false"><span>06</span> Fluted column</button>
+      </nav>
+      <div class="source-note">BLENDER → GLTF 2.0<br>Metre scale · Embedded materials<br>These are the assets used in-game.</div>
+    </aside>
+    <article>
+      <div class="stage" id="stage" aria-label="Interactive 3D model preview">
+        <div class="stage-label"><span class="eyebrow">Material study / 01—06</span><strong id="asset-code">PAVILION</strong></div>
+        <div id="status" role="status" aria-live="polite">Loading model…</div>
+        <div class="stage-hint">Drag to orbit · Scroll to zoom · Right-drag to pan</div>
+        <div class="tools"><button id="rotate" aria-pressed="false">Auto rotate</button><button id="wireframe" aria-pressed="false">Wireframe</button><button id="reset">Reset view</button></div>
+      </div>
+      <div class="details">
+        <div><h2 id="model-title">Garden pavilion</h2><p id="description" class="description"></p><a id="download" class="download" href="models/pavilion.glb" download>Download model ↓</a></div>
+        <dl><div><dt>Dimensions / m</dt><dd id="dimensions">—</dd></div><div><dt>Triangles</dt><dd id="triangles">—</dd></div><div><dt>Materials</dt><dd id="materials">—</dd></div></dl>
+      </div>
+    </article>
+  </main>
+  <script type="module" src="model-viewer.js"></script>
+</body>
+</html>

@@ -1,0 +1,80 @@
+[
+  {
+    "asset": "pillar",
+    "bytes": 2144008,
+    "triangles": 2804,
+    "budget": 4500,
+    "vertices": 1958,
+    "meshes": 2,
+    "materials": 2,
+    "embedded_images": 6,
+    "normal_mapped_materials": 2,
+    "degenerate_triangles": 0,
+    "status": "pass"
+  },
+  {
+    "asset": "light_panel",
+    "bytes": 840312,
+    "triangles": 6028,
+    "budget": 9000,
+    "vertices": 4858,
+    "meshes": 5,
+    "materials": 5,
+    "embedded_images": 6,
+    "normal_mapped_materials": 2,
+    "degenerate_triangles": 0,
+    "status": "pass"
+  },
+  {
+    "asset": "exit_door",
+    "bytes": 5641592,
+    "triangles": 9356,
+    "budget": 12000,
+    "vertices": 8005,
+    "meshes": 7,
+    "materials": 7,
+    "embedded_images": 9,
+    "normal_mapped_materials": 3,
+    "degenerate_triangles": 0,
+    "status": "pass"
+  },
+  {
+    "asset": "door_industrial",
+    "bytes": 1078316,
+    "triangles": 13972,
+    "budget": 16000,
+    "vertices": 12006,
+    "meshes": 9,
+    "materials": 9,
+    "embedded_images": 6,
+    "normal_mapped_materials": 2,
+    "degenerate_triangles": 0,
+    "status": "pass"
+  },
+  {
+    "asset": "almond_water",
+    "bytes": 1247180,
+    "triangles": 13408,
+    "budget": 16000,
+    "vertices": 10477,
+    "meshes": 6,
+    "materials": 6,
+    "embedded_images": 6,
+    "normal_mapped_materials": 2,
+    "degenerate_triangles": 0,
+    "status": "pass"
+  },
+  {
+    "asset": "pavilion",
+    "bytes": 13538112,
+    "triangles": 83900,
+    "budget": 110000,
+    "vertices": 99173,
+    "meshes": 12,
+    "materials": 12,
+    "embedded_images": 26,
+    "normal_mapped_materials": 10,
+    "degenerate_triangles": 0,
+    "status": "pass"
+  }
+]

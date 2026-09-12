@@ -1,0 +1,55 @@
+{
+  "id": 1,
+  "name": "Level 1",
+  "subtitle": "现实仓库",
+  "theme": "warehouse",
+  "gridW": 7,
+  "gridH": 7,
+  "roomSize": 11.0,
+  "roomH": 6.5,
+  "wallThick": 0.25,
+  "doorW": 6.0,
+  "doorH": 4.6,
+  "mergeChance": 0.45,
+  "extraOpen": 0.55,
+  "openSky": false,
+  "playerSpeed": 5.8,
+  "playerRad": 0.32,
+  "eyeH": 1.7,
+  "stamina": 150,
+  "pickups": [
+    {
+      "x": 27.5,
+      "z": 27.5
+    },
+    {
+      "x": 49.5,
+      "z": 27.5
+    },
+    {
+      "x": 27.5,
+      "z": 49.5
+    },
+    {
+      "x": 49.5,
+      "z": 49.5
+    }
+  ],
+  "pickupBonus": 45,
+  "spawn": {
+    "x": 38.5,
+    "y": 1.7,
+    "z": 38.5
+  },
+  "exits": [
+    {
+      "x": 11.0,
+      "z": 38.5,
+      "next": "level2"
+    }
+  ],
+  "lightSpacing": 3,
+  "lightDist": 42.0,
+  "lightEnergy": 1.8,
+  "lightColor": "#dcecff"
+}
